@@ -2,7 +2,7 @@
 # Copyright VMware, Inc.
 # SPDX-License-Identifier: APACHE-2.0
 #
-# IBM persistence library
+# USER persistence library
 # Used for bringing persistence capabilities to applications that don't have clear separation of data and logic
 
 # shellcheck disable=SC1091
@@ -18,8 +18,8 @@
 ########################
 # Persist an application directory
 # Globals:
-#   IBM_ROOT_DIR
-#   IBM_VOLUME_DIR
+#   USER_ROOT_DIR
+#   USER_VOLUME_DIR
 # Arguments:
 #   $1 - App folder name
 #   $2 - List of app files to persist
@@ -30,8 +30,8 @@ persist_app() {
     local -r app="${1:?missing app}"
     local -a files_to_restore
     read -r -a files_to_persist <<< "$(tr ',;:' ' ' <<< "$2")"
-    local -r install_dir="${IBM_ROOT_DIR}/${app}"
-    local -r persist_dir="${IBM_VOLUME_DIR}/${app}"
+    local -r install_dir="${USER_ROOT_DIR}/${app}"
+    local -r persist_dir="${USER_VOLUME_DIR}/${app}"
     # Persist the individual files
     if [[ "${#files_to_persist[@]}" -le 0 ]]; then
         warn "No files are configured to be persisted"
@@ -73,8 +73,8 @@ persist_app() {
 ########################
 # Restore a persisted application directory
 # Globals:
-#   IBM_ROOT_DIR
-#   IBM_VOLUME_DIR
+#   USER_ROOT_DIR
+#   USER_VOLUME_DIR
 #   FORCE_MAJOR_UPGRADE
 # Arguments:
 #   $1 - App folder name
@@ -86,8 +86,8 @@ restore_persisted_app() {
     local -r app="${1:?missing app}"
     local -a files_to_restore
     read -r -a files_to_restore <<< "$(tr ',;:' ' ' <<< "$2")"
-    local -r install_dir="${IBM_ROOT_DIR}/${app}"
-    local -r persist_dir="${IBM_VOLUME_DIR}/${app}"
+    local -r install_dir="${USER_ROOT_DIR}/${app}"
+    local -r persist_dir="${USER_VOLUME_DIR}/${app}"
     # Restore the individual persisted files
     if [[ "${#files_to_restore[@]}" -le 0 ]]; then
         warn "No persisted files are configured to be restored"
@@ -107,7 +107,7 @@ restore_persisted_app() {
 ########################
 # Check if an application directory was already persisted
 # Globals:
-#   IBM_VOLUME_DIR
+#   USER_VOLUME_DIR
 # Arguments:
 #   $1 - App folder name
 # Returns:
@@ -115,7 +115,7 @@ restore_persisted_app() {
 #########################
 is_app_initialized() {
     local -r app="${1:?missing app}"
-    local -r persist_dir="${IBM_VOLUME_DIR}/${app}"
+    local -r persist_dir="${USER_VOLUME_DIR}/${app}"
     if ! is_mounted_dir_empty "$persist_dir"; then
         true
     else

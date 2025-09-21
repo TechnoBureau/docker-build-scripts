@@ -15,7 +15,7 @@
 stderr_print() {
     local level="${1}"
     local message="${2}"
-    local bool="${IBM_QUIET:-false}"
+    local bool="${USER_QUIET:-false}"
     shopt -s nocasematch
     if ! [[ "$bool" = 1 || "$bool" =~ ^(yes|true)$ ]]; then
         if [[ "$level" = "error" ]]; then
@@ -78,14 +78,14 @@ error() {
 ########################
 # Log a 'debug' message
 # Globals:
-#   IBM_DEBUG
+#   USER_DEBUG
 # Arguments:
 #   Message to log
 # Returns:
 #   None
 #########################
 debug() {
-    local bool="${IBM_DEBUG:-false}"
+    local bool="${USER_DEBUG:-false}"
     shopt -s nocasematch
     if [[ "$bool" = 1 || "$bool" =~ ^(yes|true)$ ]]; then
         log "debug" "${*}"

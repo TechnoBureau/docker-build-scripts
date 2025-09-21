@@ -2,7 +2,7 @@
 # Copyright VMware, Inc.
 # SPDX-License-Identifier: APACHE-2.0
 #
-# IBM web server handler library
+# USER web server handler library
 
 # shellcheck disable=SC1090,SC1091
 
@@ -114,10 +114,10 @@ is_web_server_running() {
 #########################
 web_server_start() {
     info "Starting $(web_server_type) in background"
-    if [[ "${IBM_SERVICE_MANAGER:-}" = "systemd" ]]; then
-        systemctl start "ibm.$(web_server_type).service"
+    if [[ "${USER_SERVICE_MANAGER:-}" = "systemd" ]]; then
+        systemctl start "user.$(web_server_type).service"
     else
-        "${IBM_ROOT_DIR}/scripts/$(web_server_type)/start.sh"
+        "${USER_ROOT_DIR}/scripts/$(web_server_type)/start.sh"
     fi
 }
 
@@ -132,10 +132,10 @@ web_server_start() {
 #########################
 web_server_stop() {
     info "Stopping $(web_server_type)"
-    if [[ "${IBM_SERVICE_MANAGER:-}" = "systemd" ]]; then
-        systemctl stop "ibm.$(web_server_type).service"
+    if [[ "${USER_SERVICE_MANAGER:-}" = "systemd" ]]; then
+        systemctl stop "user.$(web_server_type).service"
     else
-        "${IBM_ROOT_DIR}/scripts/$(web_server_type)/stop.sh"
+        "${USER_ROOT_DIR}/scripts/$(web_server_type)/stop.sh"
     fi
 }
 
@@ -150,10 +150,10 @@ web_server_stop() {
 #########################
 web_server_restart() {
     info "Restarting $(web_server_type)"
-    if [[ "${IBM_SERVICE_MANAGER:-}" = "systemd" ]]; then
-        systemctl restart "ibm.$(web_server_type).service"
+    if [[ "${USER_SERVICE_MANAGER:-}" = "systemd" ]]; then
+        systemctl restart "user.$(web_server_type).service"
     else
-        "${IBM_ROOT_DIR}/scripts/$(web_server_type)/restart.sh"
+        "${USER_ROOT_DIR}/scripts/$(web_server_type)/restart.sh"
     fi
 }
 
@@ -167,10 +167,10 @@ web_server_restart() {
 #   None
 #########################
 web_server_reload() {
-    if [[ "${IBM_SERVICE_MANAGER:-}" = "systemd" ]]; then
-        systemctl reload "ibm.$(web_server_type).service"
+    if [[ "${USER_SERVICE_MANAGER:-}" = "systemd" ]]; then
+        systemctl reload "user.$(web_server_type).service"
     else
-        "${IBM_ROOT_DIR}/scripts/$(web_server_type)/reload.sh"
+        "${USER_ROOT_DIR}/scripts/$(web_server_type)/reload.sh"
     fi
 }
 

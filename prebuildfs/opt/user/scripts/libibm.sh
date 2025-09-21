@@ -2,7 +2,6 @@
 # Copyright VMware, Inc.
 # SPDX-License-Identifier: APACHE-2.0
 #
-# IBM custom library
 
 # shellcheck disable=SC1091
 
@@ -42,10 +41,9 @@ print_welcome_page() {
 #   None
 #########################
 print_image_welcome_page() {
-    local github_url="https://github.ibm.com"
 
     info ""
-    info "${BOLD}Welcome to the IBM ${APP_NAME} container${RESET}"
+    info "${BOLD}Welcome to the USER ${APP_NAME} container${RESET}"
     info ""
 }
 
