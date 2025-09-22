@@ -34,7 +34,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DEBUG="${DEBUG:-false}"
 
 # Define basic logging functions first so they can be used by other functions
-log() { 
+log() {
     echo -e "\033[1;34m[INFO]\033[0m $*"
 }
 
@@ -44,15 +44,15 @@ debug() {
     fi
 }
 
-warn() { 
+warn() {
     echo -e "\033[1;33m[WARN]\033[0m $*"
 }
 
-error() { 
+error() {
     echo -e "\033[1;31m[ERROR]\033[0m $*" >&2
 }
 
-success() { 
+success() {
     echo -e "\033[1;32m[SUCCESS]\033[0m $*"
 }
 
@@ -71,7 +71,7 @@ get_yaml_value() {
     echo "Usage: get_yaml_value <yaml_file> <dot/bracket path>" >&2
     return 2
   fi
-  
+
   if [[ "${DEBUG}" == "true" ]]; then
     debug "get_yaml_value: Looking for key '$key' in file '$yaml_file'"
     if [ ! -f "$yaml_file" ]; then
@@ -82,7 +82,7 @@ get_yaml_value() {
   if command_exists yq; then
     ver=$(yq --version 2>&1 | awk '{print $NF}' | sed 's/^v//')
     major_ver=$(echo "$ver" | cut -d. -f1)
-    
+
 
     if [ "$major_ver" -eq 4 ]; then
       # ---- mikefarah/yq v4 ----
@@ -197,11 +197,11 @@ PY
   fi
 
   [[ "$value" == "null" ]] && value=""
-  
+
   if [[ "${DEBUG}" == "true" ]]; then
     debug "get_yaml_value: Final value for key '$key' in '$yaml_file': '$value'"
   fi
-  
+
   echo "$value"
 }
 
@@ -211,7 +211,7 @@ get_env_var() {
   local var_name="$1"
   local default_value="${2:-}"
   local value=""
-  
+
   if [[ "${DEBUG}" == "true" ]]; then
     debug "get_env_var: Looking for '$var_name' (default: '$default_value')"
   fi
@@ -223,7 +223,7 @@ get_env_var() {
       debug "get_env_var: Found '$var_name' from pipelinectl: '$value'"
     fi
   fi
-  
+
   # Try to get from config file if it exists and is defined
   # Note: config is already the merged YAML from common build.yaml and image-specific build.yaml
   if [ -z "$value" ] && [ -n "${config:-}" ] && [ -f "${config:-}" ]; then
@@ -261,7 +261,7 @@ get_env_var() {
     fi
     debug "get_env_var: Final value for '$var_name': '$result'"
   fi
-  
+
   echo "$result"
 }
 
@@ -295,7 +295,7 @@ declare -a TEMP_DIRS=()
 safe_log() {
     local key="$1"
     local value="$2"
-    
+
     # Only log if debug is enabled
     if [[ "${DEBUG}" == "true" ]]; then
         # Check if the key contains words that suggest it's a secret
@@ -403,43 +403,47 @@ resolve_file() {
 create_temp_file() {
     local prefix="${1:-secret_}"
     local temp_file
-    
+
     temp_file=$(mktemp "/tmp/${prefix}.XXXXXX")
     TEMP_FILES+=("$temp_file")
-    
+
     echo "$temp_file"
 }
 
 # Create a temporary directory and track it for cleanup
 create_temp_dir() {
     local temp_dir
-    
+
     temp_dir=$(mktemp -d)
     TEMP_DIRS+=("$temp_dir")
-    
+
     echo "$temp_dir"
 }
 
 # Clean up all temporary files and directories
 cleanup_temp_files() {
     debug "Cleaning up temporary files and directories"
-    
+
     # Clean up temp files
-    for file in "${TEMP_FILES[@]}"; do
-        if [[ -f "$file" ]]; then
-            debug "Removing temporary file: $file"
-            rm -f "$file"
-        fi
-    done
-    
+    if declare -p TEMP_FILES > /dev/null 2>&1; then
+        for file in "${TEMP_FILES[@]:-}"; do
+            if [[ -f "$file" ]]; then
+                debug "Removing temporary file: $file"
+                rm -f "$file"
+            fi
+        done
+    fi
+
     # Clean up temp directories
-    for dir in "${TEMP_DIRS[@]}"; do
-        if [[ -d "$dir" ]]; then
-            debug "Removing temporary directory: $dir"
-            rm -rf "$dir"
-        fi
-    done
-    
+    if declare -p TEMP_DIRS > /dev/null 2>&1; then
+        for dir in "${TEMP_DIRS[@]:-}"; do
+            if [[ -d "$dir" ]]; then
+                debug "Removing temporary directory: $dir"
+                rm -rf "$dir"
+            fi
+        done
+    fi
+
     # Also clean up any leftover secret files
     for f in /tmp/secret_*.??????; do
         if [[ -f "$f" ]]; then
@@ -447,7 +451,7 @@ cleanup_temp_files() {
             rm -f "$f"
         fi
     done
-    
+
     # Also clean up any leftover merged_yaml files
     for f in /tmp/merged_yaml.??????; do
         if [[ -f "$f" ]]; then
@@ -455,7 +459,7 @@ cleanup_temp_files() {
             rm -f "$f"
         fi
     done
-    
+
     # Also clean up any leftover temp directories
     for d in /tmp/tmp.*; do
         if [[ -d "$d" && "$d" == /tmp/tmp.* ]]; then
@@ -497,7 +501,7 @@ detect_ci_environment() {
 # Get CI runner ID
 get_ci_runner_id() {
     local ci_env=$(detect_ci_environment)
-    
+
     case "$ci_env" in
         github)
             echo "${GITHUB_RUN_ID:-unknown}"
@@ -536,7 +540,7 @@ get_ci_runner_id() {
 get_git_sha() {
     local source_dir="${1:-$REPO_ROOT/source}"
     local short="${2:-true}"
-    
+
     if [[ -d "$source_dir/.git" ]]; then
         if [[ "$short" == "true" ]]; then
             git -C "$source_dir" rev-parse --short HEAD 2>/dev/null || echo "unknown"
@@ -561,12 +565,12 @@ load_repository() {
     local target_dir="${3:-$REPO_ROOT/source}"
     local token_name="${4:-}"
     local token=""
-    
+
     # Get token if token_name is provided
     if [ -n "$token_name" ]; then
         token=$(get_env_var "$token_name" "")
     fi
-    
+
     # if command_exists load_repo; then
     #     log "Loading repository using pipelinectl: $repo_url"
     #     if [ -n "$token" ]; then
@@ -581,9 +585,9 @@ load_repository() {
             warn "Target directory already exists, removing it"
             rm -rf "$target_dir"
         fi
-        
+
         mkdir -p "$target_dir"
-        
+
         # Clone with token if provided
         if [ -n "$token" ]; then
             # Extract domain from repo URL
@@ -594,13 +598,13 @@ load_repository() {
         else
             git clone -b "$branch" --depth 1 "$repo_url" "$target_dir"
         fi
-        
+
         if [ -f "$target_dir/.gitmodules" ]; then
             log "Initializing git submodules"
             cd "$target_dir" && git submodule update --init --recursive
             cd "$REPO_ROOT"
         fi
-        
+
         return $?
     # fi
 }
@@ -608,20 +612,20 @@ load_repository() {
 # Login to registry with standardized credentials
 login_to_registry() {
     local registry="$1"
-    local user_override="$2"
+    local user_override="${2:-}"
     local container_engine=$(detect_container_engine)
-    
+
     # Remove protocol prefix if present
     registry=$(echo "$registry" | sed -e 's|^https://||' -e 's|^http://||')
-    
+
     debug "Attempting to login to registry: $registry"
-    
+
     # Special case for AWS ECR which requires a different login method
     if [[ "$registry" == *".amazonaws.com" ]]; then
         local aws_access_key=$(get_env_var "AWS_ACCESS_KEY_ID" "")
         local aws_secret_key=$(get_env_var "AWS_SECRET_ACCESS_KEY" "")
         local aws_region=$(get_env_var "AWS_REGION" "us-east-1")
-        
+
         if [ -n "$aws_access_key" ] && [ -n "$aws_secret_key" ]; then
             log "Logging into AWS ECR: ${registry}"
             if command_exists aws; then
@@ -633,12 +637,12 @@ login_to_registry() {
             fi
         fi
     fi
-    
+
     # For all other registries, use a consistent approach
     local registry_key=$(echo "$registry" | sed 's/[^a-zA-Z0-9]/_/g')
     local registry_user=""
     local registry_pass=""
-    
+
     # If user override is provided, use it
     if [ -n "$user_override" ]; then
         registry_user="$user_override"
@@ -646,7 +650,7 @@ login_to_registry() {
         # Try to get registry-specific username from environment
         registry_user=$(get_env_var "${registry_key}_user" "")
     fi
-    
+
     # If still no user, try to determine default user based on registry type
     if [ -z "$registry_user" ]; then
         if [[ "$registry" == *"icr.io"* ]]; then
@@ -660,10 +664,10 @@ login_to_registry() {
             registry_user=$(get_env_var "REGISTRYUSER" "")
         fi
     fi
-    
+
     # Get registry-specific password
     registry_pass=$(get_env_var "${registry_key}_password" "")
-    
+
     # If no specific password, try common patterns based on registry type
     if [ -z "$registry_pass" ]; then
         if [[ "$registry" == *"icr.io"* ]]; then
@@ -681,14 +685,14 @@ login_to_registry() {
             registry_pass=$(get_env_var "REGISTRYPASS" "")
         fi
     fi
-    
+
     # Perform login if we have credentials
     if [ -n "$registry_user" ] && [ -n "$registry_pass" ]; then
         log "Logging into registry with credentials: ${registry}"
         echo "$registry_pass" | $container_engine login "$registry" -u "$registry_user" --password-stdin
         return $?
     fi
-    
+
     warn "No credentials found for registry: ${registry}; attempting anonymous access"
     return 0
 }
@@ -700,29 +704,29 @@ login_to_registries() {
     if [ -n "${config:-}" ] && [ -f "${config:-}" ]; then
         # Get registry list from YAML
         local registry_list=$(get_yaml_value "$config" "REGISTRY")
-        
+
         if [[ "${DEBUG}" == "true" ]]; then
             debug "Registry list from YAML: $registry_list"
         fi
-        
+
         # If registry list is in YAML format, process each registry
         if [ -n "$registry_list" ]; then
             # Get the number of registries in the list
             local registry_count=$(echo "$registry_list" | grep -c "name:")
-            
+
             if [[ "${DEBUG}" == "true" ]]; then
                 debug "Found $registry_count registries in YAML"
             fi
-            
+
             # Process each registry
             for ((i=0; i<registry_count; i++)); do
                 local registry_name=$(get_yaml_value "$config" "REGISTRY[$i].name")
                 local registry_user=$(get_yaml_value "$config" "REGISTRY[$i].user")
-                
+
                 if [[ "${DEBUG}" == "true" ]]; then
                     debug "Processing registry: $registry_name, user: $registry_user"
                 fi
-                
+
                 if [ -n "$registry_name" ]; then
                     # Login to registry with user from YAML if specified
                     login_to_registry "$registry_name" "$registry_user"
@@ -731,9 +735,9 @@ login_to_registries() {
         else
             # Fallback to primary registry if REGISTRY list is not found
             local primary_registry="${REGISTRY}"
-            
+
             debug "Primary registry value: '$primary_registry'"
-            
+
             # Login to primary registry only if it's not empty
             if [ -n "$primary_registry" ]; then
                 login_to_registry "$primary_registry"
@@ -744,9 +748,9 @@ login_to_registries() {
     else
         # Fallback to primary registry if config file is not found
         local primary_registry="${REGISTRY}"
-        
+
         debug "Primary registry value: '$primary_registry'"
-        
+
         # Login to primary registry only if it's not empty
         if [ -n "$primary_registry" ]; then
             login_to_registry "$primary_registry"
@@ -925,12 +929,12 @@ load_common_build_yaml() {
     local common_yaml="${REPO_ROOT}/builders/build.yaml"
     local image_yaml="$1"
     local merged_yaml
-    
+
     # Always create a merged YAML file, even if common build.yaml doesn't exist
     # Use create_temp_file to ensure it's tracked for cleanup
     merged_yaml=$(create_temp_file "merged_yaml")
     debug "Created merged YAML file: $merged_yaml"
-    
+
     # Check if common build.yaml exists
     if [[ -f "$common_yaml" ]]; then
         debug "Found common build.yaml at $common_yaml"
@@ -938,20 +942,20 @@ load_common_build_yaml() {
         if [[ "${DEBUG}" == "true" ]]; then
             cat "$common_yaml" >&2
         fi
-        
+
         debug "Image-specific build.yaml content:"
         if [[ "${DEBUG}" == "true" ]]; then
             cat "$image_yaml" >&2
         fi
-        
+
         # If we have yq, use it for proper YAML merging
         if command_exists yq; then
             debug "Using yq to merge YAML files"
-            
+
             # Check yq version to use the appropriate command
             ver=$(yq --version 2>&1 | awk '{print $NF}' | sed 's/^v//')
             major_ver=$(echo "$ver" | cut -d. -f1)
-            
+
             if [ "$major_ver" -eq 4 ]; then
                 # yq v4 uses eval-all
                 debug "Using yq v4 syntax for merging"
@@ -970,7 +974,7 @@ load_common_build_yaml() {
                 debug "Unknown yq version, using simple concatenation"
                 cat "$common_yaml" "$image_yaml" > "$merged_yaml"
             fi
-            
+
             # Show the merged result for debugging
             debug "Merged YAML content:"
             if [[ "${DEBUG}" == "true" ]]; then
@@ -980,7 +984,7 @@ load_common_build_yaml() {
             # Simple fallback: concatenate files and let later values override earlier ones
             debug "Using simple concatenation for YAML merging"
             cat "$common_yaml" "$image_yaml" > "$merged_yaml"
-            
+
             # Show the merged result for debugging
             debug "Merged YAML content (concatenated):"
             if [[ "${DEBUG}" == "true" ]]; then
@@ -992,7 +996,7 @@ load_common_build_yaml() {
         debug "No common build.yaml found, using only image-specific YAML"
         cp "$image_yaml" "$merged_yaml"
     fi
-    
+
     echo "$merged_yaml"
 }
 
@@ -1002,12 +1006,12 @@ format_image_name() {
     local image_name="$2"
     local prefix="${4:-}"
     local result=""
-    
+
     # Remove any leading/trailing slashes from components
     registry="${registry%/}"
     prefix="${prefix%/}"
     prefix="${prefix#/}"
-    
+
     # Check if we have a YAML configuration for registries
     if [ -n "${config:-}" ] && [ -f "${config:-}" ]; then
         # Try to find the registry in the YAML configuration
@@ -1015,7 +1019,7 @@ format_image_name() {
         if [ -n "$registry_list" ]; then
             # Get the number of registries in the list
             local registry_count=$(echo "$registry_list" | grep -c "name:")
-            
+
             # Find the registry in the list
             for ((i=0; i<registry_count; i++)); do
                 local registry_name=$(get_yaml_value "$config" "REGISTRY[$i].name")
@@ -1031,13 +1035,13 @@ format_image_name() {
             done
         fi
     fi
-    
+
     if [[ "${DEBUG}" == "true" ]]; then
         echo "DEBUG: Formatting image name for registry: $registry" >&2
         echo "DEBUG:   Image name: $image_name" >&2
         echo "DEBUG:   Prefix: $prefix" >&2
     fi
-    
+
     # Simple format: registry/[prefix/]name
     # The registry itself (like icr.io/webmethods) already includes any namespace
     if [[ -n "$prefix" ]]; then
@@ -1045,9 +1049,9 @@ format_image_name() {
     else
         result="${registry}/${image_name}"
     fi
-    
+
     debug "Formatted image name: $result"
-    
+
     echo "$result"
 }
 
@@ -1058,14 +1062,14 @@ format_image_name() {
 # Initialize the build environment
 initialize() {
     log "Initializing build environment"
-    
+
     # Set up cleanup trap for both normal and abnormal exits
     trap cleanup_temp_files EXIT INT TERM
-    
+
     # Detect CI environment
     CI_ENV=$(detect_ci_environment)
     log "Detected CI environment: $CI_ENV"
-    
+
     # Resolve dockerfile and config
     if [[ -n "$dockerfile_rel_location" && -f "$dockerfile_rel_location" ]]; then
         # Use the explicitly provided dockerfile path
@@ -1085,7 +1089,7 @@ initialize() {
         config="$(resolve_file config)" || exit 1
     fi
     log "Using Config: $config"
-    
+
     # Check for common build.yaml and merge if exists
     if [[ -f "${REPO_ROOT}/builders/build.yaml" ]]; then
         log "Found common build.yaml, merging with image config"
@@ -1097,38 +1101,38 @@ initialize() {
         version=$(get_version "$config" "$REPO_ROOT/source")
         debug "Determined version: $version"
     fi
-        
-   
+
+
     # Get default version and platform from config if available
     DEFAULT_VERSION=$(get_env_var "DEFAULT_VERSION" "$DEFAULT_VERSION")
     DEFAULT_PLATFORM=$(get_env_var "DEFAULT_PLATFORM" "$DEFAULT_PLATFORM")
     debug "DEFAULT_VERSION from config: $DEFAULT_VERSION"
     debug "DEFAULT_PLATFORM from config: $DEFAULT_PLATFORM"
-    
+
     # Check if registry is in the merged config file
     if [ -f "$config" ]; then
         debug "Checking registry in config file: $config"
         local config_registry=$(get_yaml_value "$config" "registry")
         debug "Registry from YAML: $config_registry"
     fi
-    
+
     # Get primary registry from YAML if available
     local primary_registry=""
     if [ -f "$config" ]; then
         primary_registry=$(get_yaml_value "$config" "REGISTRY[0].name")
         debug "Primary registry from YAML: $primary_registry"
     fi
-    
+
     # Set REGISTRY to the primary registry from YAML or environment variable
     if [ -n "$primary_registry" ]; then
         REGISTRY="$primary_registry"
     elif [ -z "${REGISTRY:-}" ]; then
         REGISTRY=$(get_env_var "REGISTRY" "docker.io")
     fi
-    
+
     debug "Registry value: $REGISTRY"
     log "Using registry: $REGISTRY"
-    
+
     # Add standard build folders to ADDITIONAL_BUILD_FOLDERS if they exist
     local standard_folders=""
     if [ -d "${REPO_ROOT}/scripts/docker" ]; then
@@ -1149,12 +1153,12 @@ initialize() {
             standard_folders="${BUILD_IMG_PATH}/rootfs"
         fi
     fi
-    
+
     # Get ADDITIONAL_BUILD_FOLDERS from environment or config
     if [ -z "${ADDITIONAL_BUILD_FOLDERS:-}" ]; then
         ADDITIONAL_BUILD_FOLDERS=$(get_env_var "ADDITIONAL_BUILD_FOLDERS" "")
     fi
-    
+
     # Append standard folders to existing ADDITIONAL_BUILD_FOLDERS if any
     if [ -n "${ADDITIONAL_BUILD_FOLDERS:-}" ]; then
         export ADDITIONAL_BUILD_FOLDERS="${ADDITIONAL_BUILD_FOLDERS},${standard_folders}"
@@ -1163,11 +1167,11 @@ initialize() {
         export ADDITIONAL_BUILD_FOLDERS="$standard_folders"
         debug "Using standard folders as additional build folders: $ADDITIONAL_BUILD_FOLDERS"
     fi
-    
+
     # Get registry credentials
     REGISTRYUSER=$(get_env_var "REGISTRYUSER" "")
     REGISTRYPASS=$(get_env_var "REGISTRYPASS" "")
-    
+
     # Only get PUSH from environment/config if it wasn't explicitly set via command line
     if [ -z "${PUSH:-}" ]; then
         PUSH=$(get_env_var "PUSH" "true")
@@ -1182,17 +1186,17 @@ initialize() {
         fi
         debug "Using PUSH value from command line: $PUSH"
     fi
-    
+
     # Get CI run number for tagging
     GITHUB_RUN_NUMBER=$(get_env_var "GITHUB_RUN_NUMBER" "1")
-    
+
     # Handle platform architecture
     PLATFORM=$(get_env_var "PLATFORM" "$DEFAULT_PLATFORM")
     debug "Using platform: $PLATFORM (default: $DEFAULT_PLATFORM)"
-    
+
     # Get image namespace and prefix
     IMAGE_PREFIX=$(get_env_var "IMAGE_PREFIX" "")
-    
+
     # Set up tagging strategy
     TAG_STRATEGY=$(get_env_var "TAG_STRATEGY" "version-build")
     # Options:
@@ -1203,17 +1207,17 @@ initialize() {
     # - version-sha: Version.git_sha as main tag, version as additional (if ADD_VERSION_TAG=true)
     # - runner-only: Just the runner ID
     # - sha-only: Just the git SHA
-    
+
     # Get runner ID and git SHA for tagging
     local runner_id=$(get_ci_runner_id)
     local git_sha=$(get_git_sha)
-    
+
     # Get additional tag options
     local add_latest=$(get_env_var "ADD_LATEST_TAG" "false")
     local add_version=$(get_env_var "ADD_VERSION_TAG" "false")
     local add_sha=$(get_env_var "ADD_SHA_TAG" "false")
     local add_runner=$(get_env_var "ADD_RUNNER_TAG" "false")
-    
+
     if [ -z "$tag" ]; then
         case "$TAG_STRATEGY" in
             version-only)
@@ -1267,30 +1271,30 @@ initialize() {
                 ;;
         esac
     fi
-    
+
     # Add git SHA to additional tags if requested
     if [[ "$add_sha" == "true" && "$git_sha" != "unknown" && "$TAG_STRATEGY" != "sha-only" ]]; then
         ADDITIONAL_TAGS="${ADDITIONAL_TAGS:-},${git_sha}"
     fi
-    
+
     # Add CI runner ID to additional tags if requested
     if [[ "$add_runner" == "true" && "$runner_id" != "unknown" && "$TAG_STRATEGY" != "runner-only" ]]; then
         ADDITIONAL_TAGS="${ADDITIONAL_TAGS:-},${runner_id}"
     fi
-    
+
     # Add latest tag if requested (and not already using latest as primary tag)
     if [[ "$add_latest" == "true" && "$tag" != "latest" && "$TAG_STRATEGY" != "latest-only" ]]; then
         ADDITIONAL_TAGS="${ADDITIONAL_TAGS:-},latest"
     fi
-    
+
     # Clean up ADDITIONAL_TAGS (remove leading comma if present)
     if [[ "${ADDITIONAL_TAGS:-}" == ,* ]]; then
         ADDITIONAL_TAGS="${ADDITIONAL_TAGS:1}"
     fi
-    
+
     # Create temp directory for build artifacts
     BUILD_TMP_DIR=$(create_temp_dir)
-    
+
     log "Build initialized with:"
     log "  Image Name: ${IMAGE_NAME}"
     log "  Version: ${version}"
@@ -1298,7 +1302,7 @@ initialize() {
     log "  Registry: ${REGISTRY}"
     log "  Image Prefix: ${IMAGE_PREFIX:-none}"
     log "  Additional Tags: ${ADDITIONAL_TAGS:-none}"
-    
+
     # Log registry configuration from YAML if available
     if [ -f "$config" ]; then
         local registry_yaml=$(get_yaml_value "$config" "REGISTRY")
@@ -1328,22 +1332,22 @@ build_docker_image() {
     local extra_args=("${@:7}")
     local container_engine=$(detect_container_engine)
     local temp_context=""
-    
+
     # Determine the build context
     local build_context="${CONTEXT:-$(dirname "$dockerfile")}"
     log "Using build context: $build_context"
-    
+
     # Check for additional folders to include in the build context
     local additional_folders="${ADDITIONAL_BUILD_FOLDERS:-}"
     if [ -n "$additional_folders" ]; then
         log "Including additional folders in build context: $additional_folders"
-        
+
         # Create a temporary directory for the build context
         temp_context=$(create_temp_dir)
-        
+
         # Copy the original context to the temp directory
         cp -r "$build_context"/* "$temp_context"/ 2>/dev/null || true
-        
+
         # Copy each additional folder to the temp directory
         IFS=',' read -ra FOLDERS <<< "$additional_folders"
         for folder in "${FOLDERS[@]}"; do
@@ -1355,12 +1359,12 @@ build_docker_image() {
                 warn "Additional folder not found: $folder"
             fi
         done
-        
+
         # Use the temporary directory as the build context
         build_context="$temp_context"
         log "Using temporary build context: $build_context"
     fi
-    
+
     # Docker metadata (labels)
     local labels=(
         "--label" "maintainer=WebM-DevOps"
@@ -1370,14 +1374,14 @@ build_docker_image() {
         "--label" "org.opencontainers.image.created=$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
         "--label" "org.opencontainers.image.description=${image_name}"
     )
-    
+
     # Format the image name based on registry type
     local formatted_image_name=$(format_image_name "$REGISTRY" "$image_name" "$prefix")
-    
+
     # Compose tag list for primary registry
     local tag_args=()
     tag_args+=("--tag" "${formatted_image_name}:${tag}")
-    
+
     # Add additional tags
     local additional_tags=$(get_env_var "ADDITIONAL_TAGS" "")
     if [ -n "${additional_tags:-}" ]; then
@@ -1389,12 +1393,12 @@ build_docker_image() {
             fi
         done
     fi
-    
+
     # Note: We only push to primary registry during build
     # Additional registries will be handled by retag_image function if needed
-    
+
     local build_args=( "--build-arg" "VERSION=${version}" "--build-arg" "REGISTRY=${REGISTRY}" )
-    
+
     # Add any additional build args from environment
     local additional_build_args=$(get_env_var "ADDITIONAL_BUILD_ARGS" "")
     if [ -n "${additional_build_args:-}" ]; then
@@ -1408,14 +1412,14 @@ build_docker_image() {
             fi
         done
     fi
-    
+
     # Handle secrets dynamically
     local secret_args=()
-    
+
     # Get BUILD_SECRETS from environment or config
     # Format: "secret_id1=env_var1,secret_id2=env_var2"
     local build_secrets=$(get_env_var "BUILD_SECRETS" "")
-    
+
     if [ -n "$build_secrets" ]; then
         log "Processing build secrets from BUILD_SECRETS variable"
         IFS=',' read -ra SECRET_PAIRS <<< "$build_secrets"
@@ -1428,7 +1432,7 @@ build_docker_image() {
                 # Get the secret value
                 local secret_value=""
                 secret_value=$(get_env_var "$env_var" "")
-                
+
                 if [ -z "$secret_value" ]; then
                     secret_value="${!env_var:-}"
                     if [ -z "$secret_value" ]; then
@@ -1449,14 +1453,14 @@ build_docker_image() {
             fi
         done
     fi
-    
+
     local platform_args=()
     if [ -n "${PLATFORM:-}" ]; then
         platform_args=( "--platform" "$PLATFORM" )
     fi
-    
+
     local push_args=()
-    
+
     # Handle push differently for podman vs docker
     if [ "${PUSH}" == "true" ]; then
         if [ "$container_engine" = "podman" ]; then
@@ -1476,45 +1480,45 @@ build_docker_image() {
         fi
         warn "PUSH=false -> building locally (no push)."
     fi
-    
+
     # Log the actual command for debugging
     if [[ "${DEBUG}" == "true" ]]; then
         echo "DEBUG: Build command: $container_engine buildx build" >&2
-        echo "DEBUG:   Platform args: ${platform_args[*]}" >&2
-        echo "DEBUG:   Tag args: ${tag_args[*]}" >&2
-        echo "DEBUG:   Labels: ${labels[*]}" >&2
-        echo "DEBUG:   Build args: ${build_args[*]}" >&2
-        echo "DEBUG:   Secret args: ${secret_args[*]}" >&2
-        echo "DEBUG:   Push args: ${push_args[*]}" >&2
-        echo "DEBUG:   Extra args: ${extra_args[*]}" >&2
+        echo "DEBUG:   Platform args: ${platform_args[*]:-}" >&2
+        echo "DEBUG:   Tag args: ${tag_args[*]:-}" >&2
+        echo "DEBUG:   Labels: ${labels[*]:-}" >&2
+        echo "DEBUG:   Build args: ${build_args[*]:-}" >&2
+        echo "DEBUG:   Secret args: ${secret_args[*]:-}" >&2
+        echo "DEBUG:   Push args: ${push_args[*]:-}" >&2
+        echo "DEBUG:   Extra args: ${extra_args[*]:-}" >&2
         echo "DEBUG:   Dockerfile: $dockerfile" >&2
         echo "DEBUG:   Build context: $build_context" >&2
     fi
-    
+
     # We're already logged in to the registry during setup_buildx, no need to login again
     debug "Using registry credentials from previous login"
-    
+
     # Build and (optionally) push
     $container_engine buildx build \
-        "${platform_args[@]}" \
-        "${tag_args[@]}" \
-        "${labels[@]}" \
-        "${build_args[@]}" \
-        "${secret_args[@]}" \
-        "${push_args[@]}" \
-        "${extra_args[@]}" \
+        "${platform_args[@]:-}" \
+        "${tag_args[@]:-}" \
+        "${labels[@]:-}" \
+        "${build_args[@]:-}" \
+        "${secret_args[@]:-}" \
+        "${push_args[@]:-}" \
+        "${extra_args[@]:-}" \
         --file "$dockerfile" \
         "$build_context"
-    
+
     local build_status=$?
     if [ ${build_status} -eq 0 ]; then
         success "Successfully built: ${image_name}"
-        
+
         # For podman, we need to manually push if PUSH=true
         if [ "${PUSH}" == "true" ] && [ "$container_engine" = "podman" ]; then
             log "Manually pushing image with podman: ${formatted_image_name}:${tag}"
             $container_engine push "${formatted_image_name}:${tag}"
-            
+
             # Push any additional tags
             if [ -n "${additional_tags}" ]; then
                 log "Pushing additional tags with podman"
@@ -1527,7 +1531,7 @@ build_docker_image() {
                 done
             fi
         fi
-        
+
         # Promote to additional registries if needed and if we have a YAML config
         if [ "${PUSH}" == "true" ] && [ -n "${config:-}" ] && [ -f "${config:-}" ]; then
             promote_to_additional_registries "$image_name" "$tag" "$version" "$prefix"
@@ -1536,7 +1540,7 @@ build_docker_image() {
         error "Failed to build image: ${image_name}"
         return ${build_status}
     fi
-    
+
     return 0
 }
 
@@ -1545,21 +1549,21 @@ retag_image() {
     local source_image="$1"
     local target_image="$2"
     local copy_signatures="${3:-true}"
-    
+
     log "Retagging/promoting image: ${source_image} -> ${target_image}"
-    
+
     # Check if skopeo is available - this is the preferred method
     if command_exists skopeo; then
         # Use skopeo to copy the image while preserving SHA IDs and digests
         local skopeo_opts=("--preserve-digests")
-        
+
         # Parse source and target registry for credentials
         local src_registry=$(echo "$source_image" | cut -d'/' -f1)
         local dest_registry=$(echo "$target_image" | cut -d'/' -f1)
-        
+
         # Add compression option
         skopeo_opts+=("--compress")
-        
+
         # Add multi-arch support
         if skopeo copy --help | grep -q "\-\-multi-arch"; then
             skopeo_opts+=("--multi-arch" "all")
@@ -1567,51 +1571,51 @@ retag_image() {
             # Fallback to all-platforms if multi-arch not available
             skopeo_opts+=("--all-platforms")
         fi
-        
+
         # Add retry options
         skopeo_opts+=("--retry-times" "3")
-        
+
         # Add retry delay (if supported)
         if skopeo copy --help | grep -q "\-\-retry-delay"; then
             skopeo_opts+=("--retry-delay" "5")
         fi
-        
+
         # Add source and destination credentials if available
         local src_user_var="multiscan-${src_registry}-registry-user"
         local src_key_var="multiscan-${src_registry}-registry-key"
         local dest_user_var="multiscan-${dest_registry}-registry-user"
         local dest_key_var="multiscan-${dest_registry}-registry-key"
-        
+
         # Use env command to get the variables with hyphens
         local src_user=""
         local src_key=""
         local dest_user=""
         local dest_key=""
-        
+
         if [ -n "$(env | grep "^$src_user_var=")" ]; then
             src_user="$(env | grep "^$src_user_var=" | cut -d= -f2-)"
         fi
-        
+
         if [ -n "$(env | grep "^$src_key_var=")" ]; then
             src_key="$(env | grep "^$src_key_var=" | cut -d= -f2-)"
         fi
-        
+
         if [ -n "$(env | grep "^$dest_user_var=")" ]; then
             dest_user="$(env | grep "^$dest_user_var=" | cut -d= -f2-)"
         fi
-        
+
         if [ -n "$(env | grep "^$dest_key_var=")" ]; then
             dest_key="$(env | grep "^$dest_key_var=" | cut -d= -f2-)"
         fi
-        
+
         if [ -n "$src_user" ] && [ -n "$src_key" ]; then
             skopeo_opts+=("--src-creds" "${src_user}:${src_key}")
         fi
-        
+
         if [ -n "$dest_user" ] && [ -n "$dest_key" ]; then
             skopeo_opts+=("--dest-creds" "${dest_user}:${dest_key}")
         fi
-        
+
         # Copy the image
         debug "Using skopeo to copy image with preserved digests and SHA IDs"
         if [[ "${DEBUG}" == "true" ]]; then
@@ -1621,7 +1625,7 @@ retag_image() {
             debug_opts=("${debug_opts[@]/--dest-creds */--dest-creds ******}")
             debug "Skopeo options: ${debug_opts[*]}"
         fi
-        
+
         if ! skopeo copy "${skopeo_opts[@]}" "docker://${source_image}" "docker://${target_image}"; then
             # If preserve-digests fails (which can happen if the target registry doesn't support it),
             # try again without that option
@@ -1630,7 +1634,7 @@ retag_image() {
             skopeo_opts=("${skopeo_opts[@]/--preserve-digests/}")
             skopeo copy "${skopeo_opts[@]}" "docker://${source_image}" "docker://${target_image}"
         fi
-        
+
         # Copy signatures if requested and cosign is available
         if [ "$copy_signatures" == "true" ]; then
             if command_exists cosign; then
@@ -1657,15 +1661,15 @@ retag_image() {
         # Fall back to standard pull/tag/push method as a last resort
         warn "skopeo not found, falling back to standard pull/tag/push method (SHA IDs and digests may change)"
         local container_engine=$(detect_container_engine)
-        
+
         $container_engine pull "$source_image"
         $container_engine tag "$source_image" "$target_image"
-        
+
         if [ "${PUSH}" == "true" ]; then
             $container_engine push "$target_image"
         fi
     fi
-    
+
     success "Successfully retagged/promoted image: ${target_image}"
 }
 
@@ -1675,56 +1679,56 @@ promote_to_additional_registries() {
     local tag="$2"
     local version="$3"
     local prefix="${4:-}"
-    
+
     # Check if we have a YAML configuration for registries
     if [ -n "${config:-}" ] && [ -f "${config:-}" ]; then
         # Get registry list from YAML
         local registry_list=$(get_yaml_value "$config" "REGISTRY")
-        
+
         if [[ "${DEBUG}" == "true" ]]; then
             debug "Registry list from YAML: $registry_list"
         fi
-        
+
         # If registry list is in YAML format, process each registry
         if [ -n "$registry_list" ]; then
             # Get the number of registries in the list
             local registry_count=$(echo "$registry_list" | grep -c "name:")
-            
+
             if [[ "${DEBUG}" == "true" ]]; then
                 debug "Found $registry_count registries in YAML"
             fi
-            
+
             # Get primary registry (first one in the list)
             local primary_registry=$(get_yaml_value "$config" "REGISTRY[0].name")
             local primary_prefix=$(get_yaml_value "$config" "REGISTRY[0].prefix")
-            
+
             # Format source image name using format_image_name to ensure consistency
             local source_image=$(format_image_name "$primary_registry" "$image_name" "" "$primary_prefix")
-            
+
             debug "Source image for promotion: $source_image"
-            
+
             # Process each registry for push
             for ((i=1; i<registry_count; i++)); do
                 local registry_name=$(get_yaml_value "$config" "REGISTRY[$i].name")
                 local registry_prefix=$(get_yaml_value "$config" "REGISTRY[$i].prefix")
                 local registry_push=$(get_yaml_value "$config" "REGISTRY[$i].push")
-                
+
                 if [[ "${DEBUG}" == "true" ]]; then
                     debug "Processing registry for push: $registry_name, prefix: $registry_prefix, push: $registry_push"
                 fi
-                
+
                 # Only push to registries with push=true
                 if [ "$registry_push" == "true" ] && [ "${PUSH}" == "true" ]; then
                     log "Promoting image to registry: $registry_name"
-                    
+
                     # Format target image name using format_image_name to ensure consistency
                     local target_image=$(format_image_name "$registry_name" "$image_name" "" "$registry_prefix")
-                    
+
                     debug "Target image for promotion: $target_image"
-                    
+
                     # Promote main tag
                     retag_image "${source_image}:${tag}" "${target_image}:${tag}"
-                    
+
                     # Promote additional tags if any
                     local additional_tags=$(get_env_var "ADDITIONAL_TAGS" "")
                     if [ -n "${additional_tags:-}" ]; then
@@ -1813,13 +1817,13 @@ main_build() {
     local additional_registries=""
     local retag_source_target=""
     local copy_signatures="true"
-    
+
     # Debug: Print all arguments received
     if [[ "${DEBUG}" == "true" ]]; then
         echo "DEBUG: main_build received arguments: $*" >&2
         echo "DEBUG: argument count: $#" >&2
     fi
-    
+
     # Check if first argument is not an option (doesn't start with -), treat it as image_name
     if [[ $# -gt 0 && ! "$1" == -* ]]; then
         image_name="$1"
@@ -1827,7 +1831,7 @@ main_build() {
         echo "DEBUG: Setting image_name to first positional argument: $image_name"
         shift
     fi
-    
+
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1941,60 +1945,60 @@ main_build() {
                 ;;
         esac
     done
-    
+
     # Only initialize once
     if [ -z "${INITIALIZED:-}" ]; then
         # Mark as initialized to prevent duplicate initialization
         INITIALIZED=true
-        
+
         # Set config path from definition if provided
         if [[ -n "$definition" ]]; then
             config="$definition"
         fi
-        
+
         # Get git branch if not provided
         if [[ -z "$git_branch" ]]; then
             # Try to get from YAML if config exists
             if [[ -n "$config" && -f "$config" ]]; then
                 git_branch=$(get_yaml_value "$config" "branch")
             fi
-    
+
             # Fallback to default
             if [[ -z "$git_branch" ]]; then
                 git_branch="main"
             fi
         fi
-        
+
         # Clone repository if specified
         if [[ -n "$git_repo" ]]; then
             log "Cloning repository: $git_repo (branch: $git_branch)"
             load_repository "$git_repo" "$git_branch" "$REPO_ROOT/source" "GITHUB_TOKEN"
         fi
-        
+
         # Initialize build environment
         initialize
-        
+
         # Setup buildx (this will also handle login to registries)
         setup_buildx
     else
         debug "Environment already initialized, skipping initialization"
     fi
-    
+
     # Handle retag operation if specified
     if [ -n "$retag_source_target" ]; then
         log "Performing image retag/promotion operation"
-        
+
         # Parse source and target from the format "source:target"
         if [[ "$retag_source_target" =~ ^(.+):(.+)$ ]]; then
             local source_image="${BASH_REMATCH[1]}"
             local target_image="${BASH_REMATCH[2]}"
-            
+
             # Login to registries (needed for both source and target)
             login_to_registries
-            
+
             # Perform the retag operation
             retag_image "$source_image" "$target_image" "$copy_signatures"
-            
+
             # Exit after retag operation
             exit $?
         else
@@ -2002,8 +2006,8 @@ main_build() {
             exit 1
         fi
     fi
-    
-    
+
+
     # Get image prefix from environment if not set via command line
     if [[ -z "$image_prefix" ]]; then
         image_prefix=$(get_env_var "IMAGE_PREFIX" "")
@@ -2011,7 +2015,7 @@ main_build() {
             log "Using image prefix from environment: $image_prefix"
         fi
     fi
-    
+
     # Get image name from environment if not set via command line
     if [ -z "$image_name" ]; then
         image_name=$(get_env_var "IMAGE_NAME" "")
@@ -2024,7 +2028,7 @@ main_build() {
     fi
 
     # Git branch has already been determined earlier
-    
+
     # Build the image with enhanced information
-    build_docker_image "$dockerfile" "$image_name" "$version" "$tag" "" "$image_prefix" "${extra_args[@]}"
+    build_docker_image "$dockerfile" "$image_name" "$version" "$tag" "" "$image_prefix" "${extra_args[@]:-}"
 }

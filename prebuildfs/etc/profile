@@ -42,6 +42,8 @@ else
     pathmunge /usr/sbin after
 fi
 
+pathmunge ${HOME}/common/bin after
+
 HOSTNAME=$(/usr/bin/hostnamectl --transient 2>/dev/null) || \
 HOSTNAME=$(/usr/bin/hostname 2>/dev/null) || \
 HOSTNAME=$(/usr/bin/uname -n)
