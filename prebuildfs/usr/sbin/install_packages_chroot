@@ -3,12 +3,47 @@
 set -euo pipefail
 #set -x
 
+# Unified script: optional release version (default 9). Accepts:
+#   install_packages_chroot 10 pkg1 pkg2 ...
+#   install_packages_chroot -r 10 pkg1 ...
+#   install_packages_chroot --releasever=10 pkg1 ...
+# If no version provided, defaults to 9.
+
+releasever=9
+
+# Parse optional release version
+if [ "$#" -gt 0 ]; then
+	# support --releasever=10
+	case "$1" in
+		--releasever=*)
+			releasever="${1#*=}"
+			shift
+			;;
+		-r|--releasever)
+			if [ "$#" -lt 2 ]; then
+				echo "Missing value for $1" >&2
+				exit 2
+			fi
+			releasever="$2"
+			shift 2
+			;;
+		[0-9]*)
+			# first arg is numeric -> treat as releasever
+			releasever="$1"
+			shift
+			;;
+		*)
+			# no release specified; keep default
+			;;
+	esac
+fi
+
 dir="/tmp/null"
 rm -rf "$dir"
 mkdir "$dir"
 cd "$dir"
 
-# Add all arguments as the initial core packages
+# Add all remaining arguments as the initial core packages
 printf '%s\n' "$@" > keep
 # Packages required for a shell environment
 cat >>keep <<EOF
@@ -37,7 +72,7 @@ EOF
 
 sort -u keep -o keep
 
-echo "==> Installing packages into chroot" >&2
+echo "==> Installing packages into chroot (releasever=$releasever)" >&2
 
 set -x
 # Install requirements for this script (xargs and cmp)
@@ -45,7 +80,7 @@ dnf install -y findutils diffutils
 # Install core packages to chroot
 rootfs="$(realpath rootfs)"
 mkdir -p "$rootfs"
-<keep xargs dnf install -y --installroot "$rootfs" --releasever 9 --setopt install_weak_deps=false --nodocs
+<keep xargs dnf install -y --installroot "$rootfs" --releasever "$releasever" --setopt install_weak_deps=false --nodocs
 dnf --installroot "$rootfs" clean all
 rm -rf "$rootfs"/var/cache/* "$rootfs"/var/log/dnf* "$rootfs"/var/log/yum.*
 { set +x; } 2>/dev/null
