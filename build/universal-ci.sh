@@ -348,64 +348,34 @@ detect_container_engine() {
 detect_platform() {
     local arch platform engine
 
-    # Detect container engine (docker|podman)
-    engine="$(detect_container_engine 2>/dev/null || true)"
-    debug "detect_platform: detected engine='$engine'"
-
     # --- Docker case ---
-    if [[ "$engine" == "docker" ]] && command_exists docker; then
-        if platform="$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null || \
-                       docker info --format '{{.OSType}}/{{.Architecture}}' 2>/dev/null)"; then
-            if [[ -n "$platform" ]]; then
-                debug "detect_platform: docker reported platform='$platform'"
-                printf '%s\n' "$platform"
-                return 0
-            fi
-        fi
-    fi
-
-    # --- Podman case ---
-    if [[ "$engine" == "podman" ]] && command_exists podman; then
-        # Try podman info: extract from YAML-like output
-        platform="$(podman info 2>/dev/null | awk '
-            BEGIN { os=""; arch="" }
-            /^host:/        { in_host=1; next }
-            in_host && /^  os: /   { sub(/^  os: /, "", $0); os=$0 }
-            in_host && /^  arch: / { sub(/^  arch: /, "", $0); arch=$0 }
-            in_host && /^version:/ { exit }  # end of host block
-            END {
-                if (os && arch) print os "/" arch
-            }')"
-
-        if [[ -n "$platform" ]]; then
-            debug "detect_platform: podman info parsed platform='$platform'"
-            printf '%s\n' "$platform"
-            return 0
-        fi
-
-        # Fallback: extract from podman version output (Server OS/Arch)
-        platform="$(podman version 2>/dev/null | awk '
-            /^Server:/ { in_server=1; next }
-            in_server && /OS\/Arch:/ { print $2; exit }')"
-
-        if [[ -n "$platform" ]]; then
-            debug "detect_platform: podman version parsed Server platform='$platform'"
-            printf '%s\n' "$platform"
+    if command -v docker >/dev/null && docker buildx version >/dev/null 2>&1; then
+        platforms=$(docker buildx inspect --bootstrap --format '{{join .Platforms ","}}' 2>/dev/null)
+        if [[ -n "$platforms" ]]; then
+            debug "detect_platform: buildx supports platforms='$platforms'"
+            echo "$platforms"
             return 0
         fi
     fi
 
-    # --- uname fallback ---
+    # Fallback to Podman if available
+    if command -v podman >/dev/null; then
+        local arch os
+        arch=$(podman info --format '{{.host.arch}}' 2>/dev/null || uname -m)
+        os=$(podman info --format '{{.host.os}}' 2>/dev/null || echo "linux")
+        if [[ -n "$arch" && -n "$os" ]]; then
+            echo "${os}/${arch}"
+            return 0
+        fi
+    fi
+
+    # Final fallback to uname
+    local arch
     arch="$(uname -m 2>/dev/null || echo x86_64)"
-    debug "detect_platform: falling back to uname arch='$arch'"
-
     case "$arch" in
         x86_64 | amd64)   echo "linux/amd64" ;;
         arm64 | aarch64)  echo "linux/arm64" ;;
-        s390x)            echo "linux/s390x" ;;
-        ppc64le)          echo "linux/ppc64le" ;;
-        riscv64)          echo "linux/riscv64" ;;
-        *)                echo "linux/amd64" ;;  # safe default
+        *)                echo "linux/amd64" ;;
     esac
 }
 
