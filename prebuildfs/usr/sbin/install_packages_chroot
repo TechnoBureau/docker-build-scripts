@@ -134,7 +134,7 @@ echo "==> Packages erased ok!" >&2
 echo "==> Importing RPM-GPG-KEY-redhat-release!" >&2
 # Import all GPG keys into the chroot
 for key in /etc/pki/rpm-gpg/*; do
-    rpm --root="$rootfs" --import "$key"
+    rpm --root="$rootfs" --import "$key" || echo "Failed to import $key, skipping."
 done
 
 echo "==> Importing Redhat GPG key successful" >&2
