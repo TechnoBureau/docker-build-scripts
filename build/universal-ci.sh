@@ -1292,9 +1292,8 @@ generate_sbom_for_image() {
 sign_image_with_cosign() {
     local image="$1"
     local keyfile=""
+    local pubfile=""
     local cosign_cmd="cosign"
-    local cosign_key_env
-    cosign_key_env="$(get_env_var "COSIGN_KEY" "")"
 
     if [[ -z "$image" ]]; then
         warn "sign_image_with_cosign: no image supplied"
@@ -1306,9 +1305,79 @@ sign_image_with_cosign() {
         return 1
     fi
 
+    # Prefer secrets from config/CI: COSIGN_PRIVATE_KEY, COSIGN_PUBLIC_KEY, COSIGN_PASSWORD
+    local cosign_private cosign_public cosign_password
+    cosign_private="$(get_env_var "COSIGN_PRIVATE_KEY" "")"
+    cosign_public="$(get_env_var "COSIGN_PUBLIC_KEY" "")"
+    cosign_password="$(get_env_var "COSIGN_PASSWORD" "")"
+
+    # If COSIGN_PRIVATE_KEY provided (preferred)
+    if [[ -n "${cosign_private}" ]]; then
+        keyfile=$(create_temp_file "cosign_key")
+        # If it looks like PEM, write as-is; otherwise try base64 decode, fallback to raw
+        if printf '%s' "${cosign_private}" | grep -q "-----BEGIN"; then
+            printf '%s' "${cosign_private}" > "${keyfile}"
+        else
+            if printf '%s' "${cosign_private}" | base64 -d > "${keyfile}" 2>/dev/null; then
+                :
+            else
+                printf '%s' "${cosign_private}" > "${keyfile}"
+            fi
+        fi
+        chmod 600 "${keyfile}"
+
+        # Optional public key write (not required for signing but store if provided)
+        if [[ -n "${cosign_public}" ]]; then
+            pubfile=$(create_temp_file "cosign_pub")
+            if printf '%s' "${cosign_public}" | grep -q "-----BEGIN"; then
+                printf '%s' "${cosign_public}" > "${pubfile}"
+            else
+                if printf '%s' "${cosign_public}" | base64 -d > "${pubfile}" 2>/dev/null; then
+                    :
+                else
+                    printf '%s' "${cosign_public}" > "${pubfile}"
+                fi
+            fi
+            chmod 600 "${pubfile}"
+        fi
+
+        # Export COSIGN_PASSWORD if provided so cosign can use it for encrypted keys
+        local old_cosign_password_value=""
+        if [[ -n "${cosign_password}" ]]; then
+            old_cosign_password_value="${COSIGN_PASSWORD:-}"
+            export COSIGN_PASSWORD="${cosign_password}"
+        fi
+
+        log "Signing image ${image} with COSIGN_PRIVATE_KEY (temp: ${keyfile})"
+        if "${cosign_cmd}" sign --key "${keyfile}" "${image}"; then
+            success "Image signed: ${image}"
+            # unset temporary COSIGN_PASSWORD if we set it
+            if [[ -n "${cosign_password}" ]]; then
+                if [[ -n "${old_cosign_password_value}" ]]; then
+                    export COSIGN_PASSWORD="${old_cosign_password_value}"
+                else
+                    unset COSIGN_PASSWORD
+                fi
+            fi
+            return 0
+        else
+            warn "cosign sign failed for ${image} using COSIGN_PRIVATE_KEY"
+            if [[ -n "${cosign_password}" ]]; then
+                if [[ -n "${old_cosign_password_value}" ]]; then
+                    export COSIGN_PASSWORD="${old_cosign_password_value}"
+                else
+                    unset COSIGN_PASSWORD
+                fi
+            fi
+            return 1
+        fi
+    fi
+
     # Prefer explicit key path
     local cosign_key_path
     cosign_key_path="$(get_env_var "COSIGN_KEY_PATH" "")"
+    local cosign_key_env
+    cosign_key_env="$(get_env_var "COSIGN_KEY" "")"
     local cosign_keyless
     cosign_keyless="$(get_env_var "COSIGN_KEYLESS" "false")"
 
@@ -1327,7 +1396,7 @@ sign_image_with_cosign() {
     if [[ -n "${cosign_key_env}" ]]; then
         keyfile=$(create_temp_file "cosign_key")
         # Try to detect PEM header, otherwise attempt base64 decode and fallback to raw write
-        if echo "${cosign_key_env}" | grep -q "-----BEGIN"; then
+        if printf '%s' "${cosign_key_env}" | grep -q "-----BEGIN"; then
             printf '%s' "${cosign_key_env}" > "${keyfile}"
         else
             if printf '%s' "${cosign_key_env}" | base64 -d > "${keyfile}" 2>/dev/null; then
