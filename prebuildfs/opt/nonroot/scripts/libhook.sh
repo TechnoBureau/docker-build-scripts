@@ -7,8 +7,10 @@
 # shellcheck disable=SC1091
 
 # Load generic libraries
-. /opt/nonroot/scripts/liblog.sh
-. /opt/nonroot/scripts/libos.sh
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+
+. "${SCRIPTS_DIR}/liblog.sh"
+. "${SCRIPTS_DIR}/libos.sh"
 
 # Override functions that log to stdout/stderr of the current process, so they print to process 1
 for function_to_override in stderr_print debug_execute; do

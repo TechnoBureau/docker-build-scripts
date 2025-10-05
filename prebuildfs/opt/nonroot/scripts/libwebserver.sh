@@ -7,7 +7,9 @@
 # shellcheck disable=SC1090,SC1091
 
 # Load generic libraries
-. /opt/nonroot/scripts/liblog.sh
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+
+. "${SCRIPTS_DIR}/liblog.sh"
 
 ########################
 # Execute a command (or list of commands) with the web server environment and library loaded

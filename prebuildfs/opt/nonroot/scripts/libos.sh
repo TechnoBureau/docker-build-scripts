@@ -7,9 +7,11 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-. /opt/nonroot/scripts/liblog.sh
-. /opt/nonroot/scripts/libfs.sh
-. /opt/nonroot/scripts/libvalidations.sh
+# Determine SCRIPTS_DIR as the directory that contains this script, so scripts can be relocated
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+. "${SCRIPTS_DIR}/liblog.sh"
+. "${SCRIPTS_DIR}/libfs.sh"
+. "${SCRIPTS_DIR}/libvalidations.sh"
 
 # Functions
 
@@ -644,6 +646,17 @@ run_chroot() {
     # Get the HOME directory for the user to switch, as chroot does
     # not properly update this env and some scripts rely on it
     homedir=$(eval echo "~${user}")
+    if [[ ! -d $homedir ]]; then
+        homedir="${HOME:-/}"
+    fi
+
+    # Obtaining value for "$@" indirectly in order to properly support shell parameter expansion
+    if [[ "$replace" = true ]]; then
+        exec chroot --userspec="$userspec" / bash -c "cd ${cwd}; export HOME=${homedir}; exec \"\$@\"" -- "$@"
+    else
+        chroot --userspec="$userspec" / bash -c "cd ${cwd}; export HOME=${homedir}; exec \"\$@\"" -- "$@"
+    fi
+}
     if [[ ! -d $homedir ]]; then
         homedir="${HOME:-/}"
     fi

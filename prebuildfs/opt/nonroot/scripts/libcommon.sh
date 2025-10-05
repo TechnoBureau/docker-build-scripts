@@ -7,7 +7,9 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-. /opt/nonroot/scripts/liblog.sh
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+
+. "${SCRIPTS_DIR}/liblog.sh"
 
 # Constants
 BOLD='\033[1m'
@@ -42,10 +44,9 @@ print_welcome_page() {
 #   None
 #########################
 print_image_welcome_page() {
-    local github_url="https://github.com"
 
     info ""
-    info "${BOLD}Welcome to the IBM ${APP_NAME} container${RESET}"
+    info "${BOLD}Welcome to the ${APP_NAME} container${RESET}"
     info ""
 }
 

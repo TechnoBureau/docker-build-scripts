@@ -7,7 +7,9 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-. /opt/nonroot/scripts/liblog.sh
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+
+. "${SCRIPTS_DIR}/liblog.sh"
 
 # Functions
 
