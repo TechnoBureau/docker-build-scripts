@@ -657,14 +657,3 @@ run_chroot() {
         chroot --userspec="$userspec" / bash -c "cd ${cwd}; export HOME=${homedir}; exec \"\$@\"" -- "$@"
     fi
 }
-    if [[ ! -d $homedir ]]; then
-        homedir="${HOME:-/}"
-    fi
-
-    # Obtaining value for "$@" indirectly in order to properly support shell parameter expansion
-    if [[ "$replace" = true ]]; then
-        exec chroot --userspec="$userspec" / bash -c "cd ${cwd}; export HOME=${homedir}; exec \"\$@\"" -- "$@"
-    else
-        chroot --userspec="$userspec" / bash -c "cd ${cwd}; export HOME=${homedir}; exec \"\$@\"" -- "$@"
-    fi
-}
