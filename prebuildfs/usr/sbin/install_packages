@@ -1,0 +1,26 @@
+#!/bin/sh
+# Copyright VMware, Inc.
+# SPDX-License-Identifier: APACHE-2.0
+set -eu
+
+n=0
+max=2
+
+until [ $n -gt $max ]; do
+    set +e
+    (
+      microdnf update -y &&
+      microdnf install -y --setopt install_weak_deps=0 --nodocs "$@"
+    )
+    CODE=$?
+    set -e
+    if [ $CODE -eq 0 ]; then
+        break
+    fi
+    if [ $n -eq $max ]; then
+        exit $CODE
+    fi
+    echo "microdnf failed, retrying"
+    n=$(($n + 1))
+done
+microdnf clean all && rm -rf /var/cache/* /var/log/dnf* /var/log/yum.*
