@@ -334,15 +334,29 @@ declare -a TEMP_DIRS=()
 
 # Detect if we're using Docker or Podman
 detect_container_engine() {
-  if command_exists podman; then
-    echo "podman"
-  elif command_exists docker; then
-    echo "docker"
-  else
-    error "Neither Podman nor Docker found. Please install one of them."
+    # Prefer real Docker if available and not aliased to Podman
+    if command -v docker >/dev/null 2>&1; then
+        if docker version --format '{{.Server.Version}}' 2>/dev/null | grep -qi "podman"; then
+            debug "detect_container_engine: docker command points to Podman"
+            echo "podman"
+            return 0
+        fi
+        debug "detect_container_engine: docker is real Docker"
+        echo "docker"
+        return 0
+    fi
+
+    # If Docker not found, try Podman
+    if command -v podman >/dev/null 2>&1; then
+        debug "detect_container_engine: using podman"
+        echo "podman"
+        return 0
+    fi
+
+    error "Neither Docker nor Podman found. Please install one of them."
     exit 1
-  fi
 }
+
 
 # In-case of platform not provided through build configuration it will detect OS platform to be pass to docker build
 detect_platform() {
