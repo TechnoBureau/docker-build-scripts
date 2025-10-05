@@ -1250,6 +1250,120 @@ format_image_name() {
     echo "$result"
 }
 
+# -----------------------------------------------------------------------------
+# SBOM generation helper
+# -----------------------------------------------------------------------------
+generate_sbom_for_image() {
+    local image="$1"
+    local sbom_tool; sbom_tool="$(get_env_var "SBOM_TOOL" "syft")"
+    local sbom_format; sbom_format="$(get_env_var "SBOM_FORMAT" "spdx-json")"
+    local sbom_file
+
+    if [[ -z "$image" ]]; then
+        warn "generate_sbom_for_image: no image supplied"
+        return 1
+    fi
+
+    sbom_file=$(create_temp_file "sbom")
+    if [[ "$sbom_tool" == "syft" ]]; then
+        if ! command_exists syft; then
+            warn "syft not found; cannot generate SBOM for ${image}"
+            return 1
+        fi
+        log "Generating SBOM (syft, format=${sbom_format}) for ${image} -> ${sbom_file}"
+        # syft supports output formats like spdx-json, cyclonedx-json, json
+        if ! syft "${image}" -o "${sbom_format}" > "${sbom_file}" 2>/dev/null; then
+            warn "syft failed to generate SBOM for ${image}"
+            return 1
+        fi
+    else
+        warn "SBOM tool '${sbom_tool}' not implemented; please install syft or set SBOM_TOOL=syft"
+        return 1
+    fi
+
+    log "SBOM generated: ${sbom_file}"
+    echo "${sbom_file}"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
+# Image signing helper (cosign)
+# -----------------------------------------------------------------------------
+sign_image_with_cosign() {
+    local image="$1"
+    local keyfile=""
+    local cosign_cmd="cosign"
+    local cosign_key_env
+    cosign_key_env="$(get_env_var "COSIGN_KEY" "")"
+
+    if [[ -z "$image" ]]; then
+        warn "sign_image_with_cosign: no image supplied"
+        return 1
+    fi
+
+    if ! command_exists "${cosign_cmd}"; then
+        warn "cosign not found; skipping signing for ${image}"
+        return 1
+    fi
+
+    # Prefer explicit key path
+    local cosign_key_path
+    cosign_key_path="$(get_env_var "COSIGN_KEY_PATH" "")"
+    local cosign_keyless
+    cosign_keyless="$(get_env_var "COSIGN_KEYLESS" "false")"
+
+    if [[ -n "${cosign_key_path}" && -f "${cosign_key_path}" ]]; then
+        log "Signing image ${image} with cosign key at ${cosign_key_path}"
+        if "${cosign_cmd}" sign --key "${cosign_key_path}" "${image}"; then
+            success "Image signed: ${image}"
+            return 0
+        else
+            warn "cosign sign failed for ${image} with key ${cosign_key_path}"
+            return 1
+        fi
+    fi
+
+    # If COSIGN_KEY provided inline (base64 or PEM), write to temp file
+    if [[ -n "${cosign_key_env}" ]]; then
+        keyfile=$(create_temp_file "cosign_key")
+        # Try to detect PEM header, otherwise attempt base64 decode and fallback to raw write
+        if echo "${cosign_key_env}" | grep -q "-----BEGIN"; then
+            printf '%s' "${cosign_key_env}" > "${keyfile}"
+        else
+            if printf '%s' "${cosign_key_env}" | base64 -d > "${keyfile}" 2>/dev/null; then
+                :
+            else
+                # fallback: write raw content
+                printf '%s' "${cosign_key_env}" > "${keyfile}"
+            fi
+        fi
+        chmod 600 "${keyfile}"
+        log "Signing image ${image} with cosign key from COSIGN_KEY (temp: ${keyfile})"
+        if "${cosign_cmd}" sign --key "${keyfile}" "${image}"; then
+            success "Image signed: ${image}"
+            return 0
+        else
+            warn "cosign sign failed for ${image} using COSIGN_KEY"
+            return 1
+        fi
+    fi
+
+    # Keyless signing
+    if [[ "${cosign_keyless}" == "true" ]]; then
+        log "Performing keyless cosign signing for ${image}"
+        if "${cosign_cmd}" sign --keyless "${image}"; then
+            success "Image keyless-signed: ${image}"
+            return 0
+        else
+            warn "cosign keyless sign failed for ${image}"
+            return 1
+        fi
+    fi
+
+    warn "No cosign key provided and keyless not enabled; skipping signing for ${image}"
+    return 1
+}
+
 # =============================================================================
 # Core Functions
 # =============================================================================
@@ -1738,6 +1852,29 @@ build_docker_image() {
         warn "PUSH=false -> building locally (no push)."
     fi
 
+    # Decide SBOM generation method (buildx vs external)
+    # - GENERATE_SBOM=true requests SBOM generation
+    # - USE_BUILDX_SBOM=true (default) will try to use buildx --sbom if supported by the engine
+    # - Buildx SBOM is only useful when pushing (image/artifacts available in registry)
+    local do_sbom_env; do_sbom_env="$(get_env_var "GENERATE_SBOM" "false")"
+    local use_buildx_sbom; use_buildx_sbom="$(get_env_var "USE_BUILDX_SBOM" "true")"
+    # Global-ish flag to indicate buildx handled SBOM generation for this build
+    BUILDX_SBOM_USED="false"
+
+    if [[ "${do_sbom_env}" == "true" && "${use_buildx_sbom}" == "true" && "${PUSH}" == "true" ]]; then
+        # Probe buildx support on the detected engine (docker or podman)
+        if command_exists "${container_engine}"; then
+            if "${container_engine}" buildx build --help 2>/dev/null | grep -q -- '--sbom'; then
+                debug "Buildx SBOM support detected for ${container_engine}; enabling buildx SBOM"
+                # buildx expects a value; use canonical true value. We add it to extra_args so it is included in the build invocation.
+                extra_args+=( "--sbom=true" )
+                BUILDX_SBOM_USED="true"
+            else
+                debug "Buildx SBOM not supported by ${container_engine}; will use external SBOM tool (syft) after push"
+            fi
+        fi
+    fi
+
     # Log the actual command for debugging
     if [[ "${DEBUG}" == "true" ]]; then
         echo "DEBUG: Build command: $container_engine buildx build" >&2
@@ -1788,6 +1925,61 @@ build_docker_image() {
                 done
             fi
         fi
+
+        # --- NEW: generate SBOM and sign images if requested (primary + additional tags) ---
+        local do_sbom; do_sbom="$(get_env_var "GENERATE_SBOM" "false")"
+        local do_sign; do_sign="$(get_env_var "SIGN_IMAGE" "false")"
+
+        if [ "${PUSH}" == "true" ]; then
+            # Only attempt SBOM/sign after push (image available in registry)
+            local main_ref="${formatted_image_name}:${tag}"
+
+            if [[ "${do_sbom}" == "true" ]]; then
+                if [[ "${BUILDX_SBOM_USED}" == "true" ]]; then
+                    log "SBOM generation was requested and buildx produced SBOM artifacts for ${main_ref} (attached/pushed by buildx)."
+                    log "If you need the SBOM locally, set USE_BUILDX_SBOM=false and GENERATE_SBOM=true to force syft fallback."
+                else
+                    debug "Request to generate SBOM for ${main_ref} using external tool"
+                    sbom_file="$(generate_sbom_for_image "${main_ref}" || true)"
+                    if [ -n "${sbom_file}" ]; then
+                        log "SBOM available at: ${sbom_file} (not uploaded)"
+                    fi
+                fi
+            fi
+
+            if [[ "${do_sign}" == "true" ]]; then
+                debug "Request to sign image ${main_ref}"
+                sign_image_with_cosign "${main_ref}" || warn "Signing failed for ${main_ref}"
+            fi
+
+            # Additional tags
+            if [ -n "${additional_tags}" ]; then
+                IFS=',' read -ra TAGS <<< "${additional_tags}"
+                for additional_tag in "${TAGS[@]}"; do
+                    if [ -n "$additional_tag" ]; then
+                        local ref="${formatted_image_name}:${additional_tag}"
+                        if [[ "${do_sbom}" == "true" ]]; then
+                            if [[ "${BUILDX_SBOM_USED}" == "true" ]]; then
+                                log "SBOM (buildx) should also be attached/pushed for tag ${ref} when buildx performed multi-tag push."
+                            else
+                                debug "Generating SBOM for ${ref} using external tool"
+                                sbom_file="$(generate_sbom_for_image "${ref}" || true)"
+                                if [ -n "${sbom_file}" ]; then
+                                    log "SBOM for ${ref}: ${sbom_file}"
+                                fi
+                            fi
+                        fi
+                        if [[ "${do_sign}" == "true" ]]; then
+                            debug "Signing ${ref}"
+                            sign_image_with_cosign "${ref}" || warn "Signing failed for ${ref}"
+                        fi
+                    fi
+                done
+            fi
+        else
+            debug "PUSH!=true, skipping SBOM/signing since image is not pushed to registry"
+        fi
+        # --- END NEW ---
 
         # Promote to additional registries if needed and if we have a YAML config
         if [ "${PUSH}" == "true" ] && [ -n "${config:-}" ] && [ -f "${config:-}" ]; then
