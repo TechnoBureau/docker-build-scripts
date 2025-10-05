@@ -19,7 +19,7 @@
 # =============================================================================
 
 set -Eeo pipefail
-
+#set -x
 # =============================================================================
 # Configuration and Environment Variables
 # =============================================================================
@@ -165,35 +165,77 @@ PY
     )
   else
     # Fallback: grep + awk (supports simple dot notation)
-    IFS='.' read -ra parts <<< "$key"
-    local current_indent=0
-    local found=false
-    local indent=""
-    local line
 
-    while IFS= read -r line; do
-      # Skip comments and empty lines
-      [[ "$line" =~ ^[[:space:]]*# ]] && continue
-      [[ -z "$line" ]] && continue
+    local regex='([a-zA-Z0-9_-]+)(\[[0-9]+\])?'
+    local part index
+    local -a parts
 
-      # Match key: value
-      if [[ "$line" =~ ^[[:space:]]*(${parts[0]}):[[:space:]]*(.*)$ ]]; then
-        value="${BASH_REMATCH[2]}"
-        found=true
-        if [[ ${#parts[@]} -eq 1 ]]; then
-          break
+    while [[ $key =~ $regex ]]; do
+        part="${BASH_REMATCH[1]}"
+        parts+=("$part")
+        if [[ -n ${BASH_REMATCH[2]} ]]; then
+        index="${BASH_REMATCH[2]//[\[\]]/}"
+        parts+=("$index")
         fi
-        current_indent=$(echo "$line" | sed -n 's/^\([[:space:]]*\).*$/\1/p' | wc -c)
-        indent="^[[:space:]]\{$current_indent\}"
-        parts=("${parts[@]:1}")
-        continue
-      fi
-      # Handle nested keys
-      if $found && [[ "$line" =~ $indent(${parts[0]}):[[:space:]]*(.*)$ ]]; then
-        value="${BASH_REMATCH[2]}"
-        break
-      fi
-    done < "$yaml_file"
+        key="${key:${#BASH_REMATCH[0]}}"
+        [[ $key == .* ]] && key="${key:1}"
+    done
+
+    # Handle simple top-level key: e.g. version: "9.latest"
+    if [[ ${#parts[@]} -eq 1 ]]; then
+        local line
+        while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ -z "$line" ]] && continue
+        local trimmed="${line#"${line%%[![:space:]]*}"}"
+        if [[ "$trimmed" =~ ^${parts[0]}:[[:space:]]*(.*)$ ]]; then
+            echo "${BASH_REMATCH[1]}" | sed -E 's/^"(.*)"$/\1/'
+            return 0
+        fi
+        done < "$yaml_file"
+    else
+        # Handle nested keys with one level of array indexing
+        # For nested paths like REGISTRY[0].name
+        local level=0
+        local indent=""
+        local current_index=-1
+        local inside_list=false
+        local line
+
+        while IFS= read -r line; do
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "$line" ]] && continue
+
+            local trimmed="${line#"${line%%[![:space:]]*}"}"
+
+            if [[ $level -eq 0 ]]; then
+            if [[ "$trimmed" == "${parts[0]}:" ]]; then
+                indent=$(echo "$line" | sed -n 's/^\([[:space:]]*\).*/\1/p')
+                level=1
+                continue
+            fi
+            elif [[ $level -eq 1 ]]; then
+            if [[ "${parts[1]}" =~ ^[0-9]+$ ]]; then
+                if [[ "$trimmed" =~ ^-[[:space:]] ]]; then
+                ((current_index++))
+                if [[ $current_index -eq ${parts[1]} ]]; then
+                    level=2
+                    if [[ "$trimmed" =~ -[[:space:]]*${parts[2]}:[[:space:]]*(.*)$ ]]; then
+                    echo "${BASH_REMATCH[1]}" | sed -E 's/^"(.*)"$/\1/'
+                    return 0
+                    fi
+                fi
+                fi
+                continue
+            fi
+            elif [[ $level -eq 2 ]]; then
+            if [[ "$trimmed" =~ ^${parts[2]}:[[:space:]]*(.*)$ ]]; then
+                echo "${BASH_REMATCH[1]}" | sed -E 's/^"(.*)"$/\1/'
+                return 0
+            fi
+            fi
+        done < "$yaml_file"
+    fi
   fi
 
   [[ "$value" == "null" ]] && value=""
@@ -1127,7 +1169,8 @@ load_common_build_yaml() {
 format_image_name() {
     local registry="$1"
     local image_name="$2"
-    local prefix="${4:-}"
+    # prefix is the 3rd argument (was incorrectly $4)
+    local prefix="${3:-}"
     local result=""
 
     # Remove any leading/trailing slashes from components
@@ -1222,26 +1265,14 @@ initialize() {
     # Set default version and tag if not provided
     if [ -z "$version" ]; then
         version=$(get_version "$config" "$REPO_ROOT/source")
-        debug "Determined version: $version"
-    fi
-
-
-    # Get default version and platform from config if available
-    DEFAULT_VERSION=$(get_env_var "DEFAULT_VERSION" "$DEFAULT_VERSION")
-    debug "DEFAULT_VERSION from config: $DEFAULT_VERSION"
-
-    # Check if registry is in the merged config file
-    if [ -f "$config" ]; then
-        debug "Checking registry in config file: $config"
-        local config_registry=$(get_yaml_value "$config" "registry")
-        debug "Registry from YAML: $config_registry"
+        log "Determined version: $version"
     fi
 
     # Get primary registry from YAML if available
     local primary_registry=""
     if [ -f "$config" ]; then
         primary_registry=$(get_yaml_value "$config" "REGISTRY[0].name")
-        debug "Primary registry from YAML: $primary_registry"
+        log "Primary registry from YAML: $primary_registry"
     fi
 
     # Set REGISTRY to the primary registry from YAML or environment variable
@@ -1318,10 +1349,11 @@ initialize() {
     fi
 
     # Get image namespace and prefix
-    IMAGE_PREFIX=$(get_env_var "IMAGE_PREFIX" "")
+    IMAGE_PREFIX=$(get_env_var "REGISTRY[0].prefix" "")
 
     # Set up tagging strategy
-    TAG_STRATEGY=$(get_env_var "TAG_STRATEGY" "version-build")
+    TAG_STRATEGY=$(get_env_var "TAG_STRATEGY" "version-runner")
+
     # Options:
     # - version-only: Just the version number
     # - latest-only: Just "latest"
@@ -1505,6 +1537,20 @@ build_docker_image() {
     local temp_context=""
     local build_context=""
 
+    # Ensure version/tag fallbacks so we use resolved values when not explicitly passed
+    if [ -z "$version" ]; then
+        # try to resolve from config/source
+        version=$(get_version "${config:-}" "${REPO_ROOT}/source")
+    fi
+    if [ -z "$tag" ]; then
+        # default tag uses version when available
+        if [ -n "$version" ]; then
+            tag="$version"
+        else
+            tag="latest"
+        fi
+    fi
+
     # Determine the build context
     if [[ -n "$git_repo" ]]; then
         build_context="$REPO_ROOT/source"
@@ -1552,7 +1598,8 @@ build_docker_image() {
     )
 
     # Format the image name based on registry type
-    local formatted_image_name=$(format_image_name "$REGISTRY" "$image_name" "$prefix")
+    local formatted_image_name
+    formatted_image_name=$(format_image_name "$REGISTRY" "$image_name" "$prefix")
 
     # Compose tag list for primary registry
     local tag_args=()
@@ -1877,8 +1924,10 @@ promote_to_additional_registries() {
             local primary_registry=$(get_yaml_value "$config" "REGISTRY[0].name")
             local primary_prefix=$(get_yaml_value "$config" "REGISTRY[0].prefix")
 
-            # Format source image name using format_image_name to ensure consistency
-            local source_image=$(format_image_name "$primary_registry" "$image_name" "" "$primary_prefix")
+            # Format source image using format_image_name to ensure consistency
+            # pass prefix as 3rd arg (was incorrectly passed as 4th)
+            local source_image
+            source_image=$(format_image_name "$primary_registry" "$image_name" "$primary_prefix")
 
             debug "Source image for promotion: $source_image"
 
@@ -1896,8 +1945,10 @@ promote_to_additional_registries() {
                 if [ "$registry_push" == "true" ] && [ "${PUSH}" == "true" ]; then
                     log "Promoting image to registry: $registry_name"
 
-                    # Format target image name using format_image_name to ensure consistency
-                    local target_image=$(format_image_name "$registry_name" "$image_name" "" "$registry_prefix")
+                    # Format target image using format_image_name to ensure consistency
+                    # pass prefix as 3rd arg (was incorrectly passed as 4th)
+                    local target_image
+                    target_image=$(format_image_name "$registry_name" "$image_name" "$registry_prefix")
 
                     debug "Target image for promotion: $target_image"
 
