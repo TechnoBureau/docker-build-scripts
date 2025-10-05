@@ -47,8 +47,6 @@ cd "$dir"
 printf '%s\n' "$@" > keep
 # Packages required for a shell environment
 cat >>keep <<EOF
-bash
-coreutils-single
 EOF
 
 # Packages that are not needed in the chroot environment.  Disallow list to block certain packages and their dependencies from being installed and very careful to add into this list where it will find those dependencies as well to be removed.
@@ -68,6 +66,16 @@ python3-setuptools-wheel
 p11-kit
 systemd
 tzdata
+alternatives
+coreutils-single
+bash
+libselinux
+libsemanage
+libsepol
+shadow-utils
+sed
+redhat-release
+grep
 EOF
 
 sort -u keep -o keep
