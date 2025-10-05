@@ -1313,7 +1313,7 @@ initialize() {
 
     # Handle platform architecture
     PLATFORM=$(get_env_var "PLATFORM" "")
-    if [ -z "${PLATFORM:-}" ]: then
+    if [ -z "${PLATFORM:-}" ]; then
         PLATFORM=$(detect_platform)
     fi
 
