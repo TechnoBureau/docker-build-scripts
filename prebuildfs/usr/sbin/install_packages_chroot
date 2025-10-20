@@ -51,31 +51,66 @@ EOF
 
 # Packages that are not needed in the chroot environment.  Disallow list to block certain packages and their dependencies from being installed and very careful to add into this list where it will find those dependencies as well to be removed.
 
-cat >disallow <<EOF
+cat >disallow <<'EOF'
 alsa-lib
-copy-jdk-configs
+atk
+authselect
+avahi-libs
+cracklib
 cups-libs
 chkconfig
+dbus
+device-mapper
+dracut
+freetype
+fontconfig
+gdbm
+glibc-all-langpacks
+groff-base
+harfbuzz
 info
+iputils
+kmod
+less
+libX11
+libXcomposite
+libXcursor
+libXdamage
+libXext
+libXfixes
+libXi
+libXinerama
+libXrandr
+libXrender
+libXtst
+libdrm
+libglvnd
+libpng
+libpwquality
+libselinux-utils
+libstdc++
+libwayland-client
+libxcb
+mesa*
+NetworkManager
+p11-kit
+pam
+pam-libs
+passwd
 platform-python
 platform-python-setuptools
+policycoreutils
+procps-ng
 python3
 python3-libs
 python3-pip-wheel
 python3-setuptools-wheel
-p11-kit
-systemd
-tzdata
-alternatives
-coreutils-single
-bash
-libselinux
-libsemanage
-libsepol
 shadow-utils
-sed
-redhat-release
-grep
+systemd
+systemd-libs
+systemd-pam
+tzdata
+udev
 EOF
 
 sort -u keep -o keep
