@@ -46,7 +46,14 @@ cd "$dir"
 # Add all remaining arguments as the initial core packages
 printf '%s\n' "$@" > keep
 # Packages required for a shell environment
-cat >>keep <<EOF
+cat >>keep <<'EOF'
+coreutils-single
+glibc
+glibc-minimal-langpack
+filesystem
+setup
+openssl-libs
+ca-certificates
 EOF
 
 # Packages that are not needed in the chroot environment.  Disallow list to block certain packages and their dependencies from being installed and very careful to add into this list where it will find those dependencies as well to be removed.
@@ -93,9 +100,7 @@ libwayland-client
 libxcb
 mesa*
 NetworkManager
-p11-kit
 pam
-pam-libs
 passwd
 platform-python
 platform-python-setuptools
