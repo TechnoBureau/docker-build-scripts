@@ -15,28 +15,50 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 #########################
 custom_init_scripts() {
     local custom_init_dir="${INITSCRIPTS_DIR:-${HOME}/docker-entrypoint-initdb.d}"
-    if [[ -n $(find "${custom_init_dir}/" -type f -regex ".*\.sh") ]]; then
+    if [[ -d "${custom_init_dir}" ]]; then
         info "Loading user's custom files from $custom_init_dir ..."
-        local -r tmp_file="/tmp/filelist"
-        find "${custom_init_dir}/" -type f -regex ".*\.sh" | sort >"$tmp_file"
-        while read -r f; do
-            case "$f" in
-            *.sh)
-                if [[ -x "$f" ]]; then
-                    debug "Executing $f"
-                    "$f"
-                else
-                    debug "Sourcing $f"
-                    . "$f"
+        local script_files=()
+
+        # Safely get script files, handling cases where 'find' might not be available or preferred
+        if command -v find >/dev/null 2>&1; then
+            # Use find for robustness and sorting
+            while IFS= read -r -d $'\0' file; do
+                script_files+=("$file")
+            done < <(find "${custom_init_dir}/" -type f -regex ".*\.sh" -print0 | sort -z)
+        else
+            # Fallback for environments without 'find' or for simplicity
+            # This approach might not sort files consistently across systems
+            for file in "${custom_init_dir}"/*.sh; do
+                if [[ -f "$file" ]]; then
+                    script_files+=("$file")
                 fi
-                ;;
-            *)
-                debug "Ignoring $f"
-                ;;
-            esac
-        done <$tmp_file
-        rm -f "$tmp_file"
+            done
+            # Sort the array if 'find' was not used
+            IFS=$'\n' script_files=($(sort <<<"${script_files[*]}"))
+            unset IFS
+        fi
+
+        if [[ ${#script_files[@]} -gt 0 ]]; then
+            for f in "${script_files[@]}"; do
+                case "$f" in
+                *.sh)
+                    if [[ -x "$f" ]]; then
+                        debug "Executing $f"
+                        "$f"
+                    else
+                        debug "Sourcing $f"
+                        . "$f"
+                    fi
+                    ;;
+                *)
+                    debug "Ignoring $f"
+                    ;;
+                esac
+            done
+        else
+            info "No custom scripts in $custom_init_dir"
+        fi
     else
-        info "No custom scripts in $custom_init_dir"
+        info "Custom init directory $custom_init_dir does not exist."
     fi
 }
