@@ -116,12 +116,6 @@ systemd-pam
 tzdata
 udev
 alternatives
-libselinux
-libsemanage
-libsepol
-shadow-utils
-sed
-grep
 redhat-logos-httpd
 EOF
 
