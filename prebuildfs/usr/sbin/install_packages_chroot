@@ -47,9 +47,7 @@ cd "$dir"
 printf '%s\n' "$@" > keep
 # Packages required for a shell environment
 cat >>keep <<'EOF'
-coreutils-single
 glibc
-glibc-minimal-langpack
 filesystem
 setup
 openssl-libs
@@ -100,7 +98,9 @@ libwayland-client
 libxcb
 mesa*
 NetworkManager
+p11-kit
 pam
+pam-libs
 passwd
 platform-python
 platform-python-setuptools
@@ -116,6 +116,16 @@ systemd-libs
 systemd-pam
 tzdata
 udev
+alternatives
+coreutils-single
+bash
+libselinux
+libsemanage
+libsepol
+shadow-utils
+sed
+redhat-release
+grep
 EOF
 
 sort -u keep -o keep
