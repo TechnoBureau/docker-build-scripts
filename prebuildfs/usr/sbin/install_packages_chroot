@@ -100,7 +100,6 @@ mesa*
 NetworkManager
 p11-kit
 pam
-pam-libs
 passwd
 platform-python
 platform-python-setuptools
@@ -126,6 +125,7 @@ shadow-utils
 sed
 redhat-release
 grep
+redhat-logos-httpd
 EOF
 
 sort -u keep -o keep
