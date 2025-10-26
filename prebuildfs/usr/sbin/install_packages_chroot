@@ -285,6 +285,7 @@ rm -rf "$rootfs"/usr/lib/locale/*
 rm -rf "$rootfs"/usr/share/zoneinfo/*
 rm -rf "$rootfs"/var/cache/*
 #rm -rf "$rootfs"/var/log/*
+rm -rf "$rootfs"/var/lib/dnf/*
 rm -rf "$rootfs"/tmp/*
 rm -rf "$rootfs"/usr/lib/firmware
 rm -rf "$rootfs"/usr/lib/modules
@@ -297,6 +298,8 @@ rm -rf "$rootfs"/usr/games
 rm -rf "$rootfs"/usr/include
 rm -rf "$rootfs"/usr/src
 rm -rf "$rootfs"/usr/share/bash-completion
+rm -rf "$rootfs"/var/lib/rpm/rpmdb*
+
 
 # Remove static libraries
 find "$rootfs"/usr/lib64 -name "*.a" -delete 2>/dev/null || true && \
@@ -317,7 +320,4 @@ done
 
 echo "==> Importing Redhat GPG key successful" >&2
 
-rm -f "$rootfs"/var/lib/rpm/rpmdb*
 rpm --root "$rootfs" --rebuilddb
-#sqlite3 "$rootfs"/var/lib/rpm/rpmdb.sqlite "VACUUM;"
-rpm --root "$rootfs" -qa
