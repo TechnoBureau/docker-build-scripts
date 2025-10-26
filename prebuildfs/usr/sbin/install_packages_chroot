@@ -7,13 +7,15 @@ set -euo pipefail
 #   install_packages_chroot 10 pkg1 pkg2 ...
 #   install_packages_chroot -r 10 pkg1 ...
 #   install_packages_chroot --releasever=10 pkg1 ...
+#   install_packages_chroot --exclude="pkg1,pkg2" pkg3 pkg4 ...
+#   DISALLOW_PACKAGES="pkg1,pkg2" install_packages_chroot pkg3 pkg4 ...
 # If no version provided, defaults to 9.
 
 releasever=9
+extra_disallow=""
 
-# Parse optional release version
-if [ "$#" -gt 0 ]; then
-	# support --releasever=10
+# Parse optional release version and disallow packages
+while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--releasever=*)
 			releasever="${1#*=}"
@@ -27,15 +29,37 @@ if [ "$#" -gt 0 ]; then
 			releasever="$2"
 			shift 2
 			;;
+		--exclude=*)
+			extra_disallow="${1#*=}"
+			shift
+			;;
+		-e|--exclude)
+			if [ "$#" -lt 2 ]; then
+				echo "Missing value for $1" >&2
+				exit 2
+			fi
+			extra_disallow="$2"
+			shift 2
+			;;
 		[0-9]*)
 			# first arg is numeric -> treat as releasever
 			releasever="$1"
 			shift
 			;;
 		*)
-			# no release specified; keep default
+			# end of options, remaining are package names
+			break
 			;;
 	esac
+done
+
+# Also support DISALLOW_PACKAGES environment variable
+if [ -n "${DISALLOW_PACKAGES:-}" ]; then
+	if [ -n "$extra_disallow" ]; then
+		extra_disallow="${extra_disallow},${DISALLOW_PACKAGES}"
+	else
+		extra_disallow="${DISALLOW_PACKAGES}"
+	fi
 fi
 
 dir="/tmp/null"
@@ -48,10 +72,13 @@ printf '%s\n' "$@" > keep
 # Packages required for a shell environment
 cat >>keep <<'EOF'
 glibc
+glibc-minimal-langpack
 filesystem
 setup
 openssl-libs
 ca-certificates
+libgcc
+bash
 EOF
 
 # Packages that are not needed in the chroot environment.  Disallow list to block certain packages and their dependencies from being installed and very careful to add into this list where it will find those dependencies as well to be removed.
@@ -61,63 +88,140 @@ alsa-lib
 atk
 authselect
 avahi-libs
-cracklib
-cups-libs
+bash-completion
+bc
+bind-utils
+bzip2
 chkconfig
+coreutils
+cpio
+cracklib
+cronie
+cups-libs
+curl
 dbus
 device-mapper
+diffutils
 dracut
-freetype
+e2fsprogs
+ed
+elfutils
+file
+findutils
 fontconfig
+freetype
+gawk
 gdbm
+gdb
 glibc-all-langpacks
+glibc-langpack-en
+gnupg2
+gnutls
+gpgme
+grep
 groff-base
+gzip
 harfbuzz
+hostname
 info
+iproute
 iputils
+kbd
 kmod
+krb5-libs
 less
 libX11
+libXau
 libXcomposite
 libXcursor
 libXdamage
 libXext
 libXfixes
+libXft
 libXi
 libXinerama
 libXrandr
 libXrender
 libXtst
+libassuan
+libcap
 libdrm
+libgcrypt
 libglvnd
+libidn2
+libmount
 libpng
 libpwquality
 libselinux-utils
 libstdc++
+libtasn1
+libunistring
+libuser
 libwayland-client
 libxcb
+libxml2
+libxslt
+lz4
 mesa*
+ncurses
+net-tools
+nettle
 NetworkManager
+openssh
+openssh-clients
+openssl
 p11-kit
 pam
 passwd
+pcre
+pcre2
+perl
+pkgconfig
 platform-python
+platform-python-pip
 platform-python-setuptools
 policycoreutils
+popt
 procps-ng
+psmisc
 python3
 python3-libs
+python3-pip
 python3-pip-wheel
+python3-setuptools
 python3-setuptools-wheel
+readline
+redhat-logos-httpd
+rootfiles
+rpm
+sed
 shadow-utils
+shared-mime-info
+sqlite-libs
+sudo
 systemd
 systemd-libs
 systemd-pam
+tar
 tzdata
 udev
+util-linux
+vim-minimal
+wget
+which
+xz
+xz-libs
+yum
+zlib
 alternatives
-redhat-logos-httpd
 EOF
+
+# Add additional disallow packages from command line or environment variable
+if [ -n "$extra_disallow" ]; then
+	echo "==> Adding additional disallow packages: $extra_disallow" >&2
+	# Convert comma-separated list to newlines and append to disallow file
+	echo "$extra_disallow" | tr ',' '\n' >> disallow
+fi
 
 sort -u keep -o keep
 
@@ -176,6 +280,36 @@ echo "==> Erasing packages" >&2
 set -x
 <remove xargs rpm -r "$rootfs" --erase --nodeps --allmatches
 { set +x; } 2>/dev/null
+
+
+# AGGRESSIVE cleanup - remove all non-essential files
+echo "==> Aggressive cleanup" >&2
+rm -rf "$rootfs"/usr/share/{man,doc,info,groff,lintian,i18n,locale}
+rm -rf "$rootfs"/usr/share/locale/*
+rm -rf "$rootfs"/usr/lib/locale/*
+rm -rf "$rootfs"/usr/share/zoneinfo/*
+rm -rf "$rootfs"/var/cache/*
+rm -rf "$rootfs"/var/log/*
+rm -rf "$rootfs"/tmp/*
+rm -rf "$rootfs"/usr/lib/firmware
+rm -rf "$rootfs"/usr/lib/modules
+rm -rf "$rootfs"/boot
+rm -rf "$rootfs"/media
+rm -rf "$rootfs"/mnt
+rm -rf "$rootfs"/opt
+rm -rf "$rootfs"/srv
+rm -rf "$rootfs"/usr/games
+rm -rf "$rootfs"/usr/include
+rm -rf "$rootfs"/usr/src
+rm -rf "$rootfs"/usr/share/bash-completion
+
+# Remove static libraries
+find "$rootfs"/usr/lib64 -name "*.a" -delete 2>/dev/null || true && \
+
+find "$rootfs"/usr/share/zoneinfo -type f ! -name 'UTC' -delete 2>/dev/null || true && \
+# Strip binaries
+find "$rootfs"/usr/bin "$rootfs"/usr/sbin "$rootfs"/usr/lib* -type f -executable -exec strip --strip-unneeded {} \; 2>/dev/null || true
+find "$rootfs"/usr/lib* -type f -name "*.so*" -exec strip --strip-unneeded {} \; 2>/dev/null || true
 
 echo "" >&2
 echo "==> Packages erased ok!" >&2
