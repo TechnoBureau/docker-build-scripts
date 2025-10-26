@@ -208,7 +208,6 @@ which
 xz
 xz-libs
 yum
-zlib
 alternatives
 EOF
 
