@@ -319,5 +319,5 @@ echo "==> Importing Redhat GPG key successful" >&2
 
 rm -f "$rootfs"/var/lib/rpm/rpmdb*
 rpm --root "$rootfs" --rebuilddb
-sqlite3 "$rootfs"/var/lib/rpm/rpmdb.sqlite "VACUUM;"
+#sqlite3 "$rootfs"/var/lib/rpm/rpmdb.sqlite "VACUUM;"
 rpm --root "$rootfs" -qa
