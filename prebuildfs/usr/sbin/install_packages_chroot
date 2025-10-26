@@ -93,7 +93,6 @@ bc
 bind-utils
 bzip2
 chkconfig
-coreutils
 cpio
 cracklib
 cronie
