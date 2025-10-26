@@ -286,7 +286,7 @@ rm -rf "$rootfs"/usr/lib/locale/*
 rm -rf "$rootfs"/usr/share/zoneinfo/*
 rm -rf "$rootfs"/var/cache/*
 #rm -rf "$rootfs"/var/log/*
-rm -rf "$rootfs"/var/lib/dnf/*
+#rm -rf "$rootfs"/var/lib/dnf/*
 rm -rf "$rootfs"/tmp/*
 rm -rf "$rootfs"/usr/lib/firmware
 rm -rf "$rootfs"/usr/lib/modules
