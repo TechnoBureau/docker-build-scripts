@@ -171,8 +171,6 @@ openssl
 p11-kit
 pam
 passwd
-pcre
-pcre2
 perl
 pkgconfig
 platform-python
