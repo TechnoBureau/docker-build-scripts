@@ -33,7 +33,12 @@ custom_init_scripts() {
                 fi
             done
             # Sort the array if 'find' was not used
-            IFS=$'\n' script_files=($(sort <<<"${script_files[*]}"))
+            if command -v sort >/dev/null 2>&1; then
+                IFS=$'\n' script_files=($(sort <<<"${script_files[*]}"))
+            else
+                # 'sort' not available — keep original order
+                IFS=$'\n' script_files=(${script_files[*]})
+            fi
             unset IFS
         fi
 
