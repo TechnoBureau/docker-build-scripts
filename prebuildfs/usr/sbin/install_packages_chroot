@@ -78,7 +78,6 @@ setup
 openssl-libs
 ca-certificates
 libgcc
-bash
 EOF
 
 # Packages that are not needed in the chroot environment.  Disallow list to block certain packages and their dependencies from being installed and very careful to add into this list where it will find those dependencies as well to be removed.
