@@ -286,7 +286,7 @@ rm -rf "$rootfs"/usr/lib/locale/*
 rm -rf "$rootfs"/usr/share/zoneinfo/*
 rm -rf "$rootfs"/var/cache/*
 #rm -rf "$rootfs"/var/log/*
-#rm -rf "$rootfs"/var/lib/dnf/*
+rm -rf "$rootfs"/var/lib/dnf/*
 rm -rf "$rootfs"/tmp/*
 rm -rf "$rootfs"/usr/lib/firmware
 rm -rf "$rootfs"/usr/lib/modules
@@ -299,7 +299,7 @@ rm -rf "$rootfs"/usr/games
 rm -rf "$rootfs"/usr/include
 rm -rf "$rootfs"/usr/src
 rm -rf "$rootfs"/usr/share/bash-completion
-rm -rf "$rootfs"/var/lib/rpm/rpmdb*
+rm -rf "$rootfs"/var/lib/rpm/rpmdb.sqlite-*
 
 
 # Remove static libraries
