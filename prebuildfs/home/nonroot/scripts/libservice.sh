@@ -7,10 +7,8 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-
-. "${SCRIPTS_DIR}/libvalidations.sh"
-. "${SCRIPTS_DIR}/liblog.sh"
+. /home/nonroot/scripts/libvalidations.sh
+. /home/nonroot/scripts/liblog.sh
 
 # Functions
 

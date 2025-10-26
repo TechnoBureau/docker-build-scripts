@@ -8,12 +8,10 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-
-. "${SCRIPTS_DIR}/libfs.sh"
-. "${SCRIPTS_DIR}/libos.sh"
-. "${SCRIPTS_DIR}/liblog.sh"
-. "${SCRIPTS_DIR}/libversion.sh"
+. /home/nonroot/scripts/libfs.sh
+. /home/nonroot/scripts/libos.sh
+. /home/nonroot/scripts/liblog.sh
+. /home/nonroot/scripts/libversion.sh
 
 # Functions
 

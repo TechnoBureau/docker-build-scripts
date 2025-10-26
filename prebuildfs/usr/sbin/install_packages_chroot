@@ -209,6 +209,7 @@ xz
 xz-libs
 yum
 alternatives
+coreutils
 EOF
 
 # Add additional disallow packages from command line or environment variable

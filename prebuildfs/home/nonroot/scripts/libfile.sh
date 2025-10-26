@@ -7,9 +7,9 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
-. "${SCRIPTS_DIR}/libos.sh"
+. /home/nonroot/scripts/libos.sh
+
 
 # Functions
 
