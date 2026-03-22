@@ -392,7 +392,7 @@ remove_logrotate_conf() {
 generate_systemd_conf() {
     local -r service_name="${1:?service name is missing}"
     local -r systemd_units_dir="/etc/systemd/system"
-    local -r service_file="${systemd_units_dir}/${service_name}.service"
+    local -r service_file="${systemd_units_dir}/technobureau.${service_name}.service"
     # Default values
     local name="$service_name"
     local type="forking"
@@ -486,8 +486,8 @@ generate_systemd_conf() {
 # SPDX-License-Identifier: APACHE-2.0
 
 [Unit]
-Description=service for ${name}
-# Starting/stopping the main service should cause the same effect for this service
+Description=TechnoBureau service for ${name}
+# Starting/stopping the main technobureau service should cause the same effect for this service
 PartOf=technobureau.service
 
 [Service]
@@ -570,7 +570,7 @@ EOF
     cat >> "$service_file" <<EOF
 
 [Install]
-# Enabling/disabling the main service should cause the same effect for this service
+# Enabling/disabling the main technobureau service should cause the same effect for this service
 WantedBy=technobureau.service
 EOF
 }

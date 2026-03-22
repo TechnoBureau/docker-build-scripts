@@ -2,12 +2,11 @@
 # Copyright VMware, Inc.
 # SPDX-License-Identifier: APACHE-2.0
 #
-# IBM custom library
+# TechnoBureau custom library
 
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-
 . /home/nonroot/scripts/liblog.sh
 
 # Constants
@@ -43,7 +42,6 @@ print_welcome_page() {
 #   None
 #########################
 print_image_welcome_page() {
-
     info ""
     info "${BOLD}Welcome to the ${APP_NAME} container${RESET}"
     info ""

@@ -7,7 +7,6 @@
 # shellcheck disable=SC1091
 
 # Load generic libraries
-
 . /home/nonroot/scripts/liblog.sh
 . /home/nonroot/scripts/libos.sh
 

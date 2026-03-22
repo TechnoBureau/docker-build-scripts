@@ -7,7 +7,6 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-
 . /home/nonroot/scripts/liblog.sh
 
 # Functions

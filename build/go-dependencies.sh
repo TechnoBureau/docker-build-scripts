@@ -1,13 +1,15 @@
 #!/bin/bash
 
-# Enable debug mode if PIPELINE_DEBUG is set
-[[ -n ${PIPELINE_DEBUG} || -n ${DEBUG} ]] && set -x
+# WHY: Robust debug detection accepts 1, true, TRUE, yes, on, etc. (case-insensitive)
+if [[ -n "${DEBUG:-}" ]] && ! [[ "${DEBUG,,}" =~ ^(0|false|no|off)$ ]]; then
+    set -x
+fi
 
 # Configuration
-SCRIPT_DIR="/shared"
+CI_SCRIPT_DIR="/shared"
 GO_VERSION="${1:-1.23.1}"  # Accept version as argument, default to 1.23.1
-GO_INSTALL_DIR="${SCRIPT_DIR}/usr/local/go"
-GOPATH="${SCRIPT_DIR}/go"
+GO_INSTALL_DIR="${CI_SCRIPT_DIR}/usr/local/go"
+GOPATH="${CI_SCRIPT_DIR}/go"
 
 # Detect system architecture and OS
 detect_system() {
@@ -63,7 +65,7 @@ cleanup() {
 }
 
 # Execution
-cd "${SCRIPT_DIR}" || exit 1
+cd "${CI_SCRIPT_DIR}" || exit 1
 detect_system
 download_go
 extract_go

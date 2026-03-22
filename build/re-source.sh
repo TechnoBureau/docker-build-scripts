@@ -14,3 +14,9 @@ done
 Replace() {
 grep -rl "$1" . | grep -v $me | xargs sed -i '' -e s@"$1"@"$2"@g
 }
+RenameFiles softwareag softwareag1
+Replace softwareag softwareag1
+Replace SoftwareAG SoftwareAG1
+Replace sagadmin sagadmin1
+Replace Softwareag Softwareag1
+Replace SOFTWAREAG SOFTWAREAG1

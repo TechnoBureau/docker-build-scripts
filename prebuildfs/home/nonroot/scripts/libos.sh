@@ -7,11 +7,9 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-# Determine SCRIPTS_DIR as the directory that contains this script, so scripts can be relocated
 . /home/nonroot/scripts/liblog.sh
 . /home/nonroot/scripts/libfs.sh
 . /home/nonroot/scripts/libvalidations.sh
-
 
 # Functions
 

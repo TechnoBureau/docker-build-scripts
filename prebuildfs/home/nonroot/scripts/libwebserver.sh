@@ -2,7 +2,7 @@
 # Copyright VMware, Inc.
 # SPDX-License-Identifier: APACHE-2.0
 #
-# IBM web server handler library
+# TechnoBureau web server handler library
 
 # shellcheck disable=SC1090,SC1091
 
@@ -23,8 +23,8 @@ web_server_execute() {
     shift
     # Run program in sub-shell to avoid web server environment getting loaded when not necessary
     (
-        . "/opt/nonroot/scripts/lib${web_server}.sh"
-        . "/opt/nonroot/scripts/${web_server}-env.sh"
+        . "/home/nonroot/scripts/lib${web_server}.sh"
+        . "/home/nonroot/scripts/${web_server}-env.sh"
         "$@"
     )
 }
@@ -42,7 +42,7 @@ web_server_list() {
     local -r -a supported_web_servers=(apache nginx)
     local -a existing_web_servers=()
     for web_server in "${supported_web_servers[@]}"; do
-        [[ -f "/opt/nonroot/scripts/${web_server}-env.sh" ]] && existing_web_servers+=("$web_server")
+        [[ -f "/home/nonroot/scripts/${web_server}-env.sh" ]] && existing_web_servers+=("$web_server")
     done
     echo "${existing_web_servers[@]:-}"
 }
@@ -84,7 +84,7 @@ web_server_validate() {
     if [[ -z "$(web_server_type)" || ! " ${supported_web_servers[*]} " == *" $(web_server_type) "* ]]; then
         print_validation_error "Could not detect any supported web servers. It must be one of: ${supported_web_servers[*]}"
     elif ! web_server_execute "$(web_server_type)" type -t "is_$(web_server_type)_running" >/dev/null; then
-        print_validation_error "Could not load the $(web_server_type) web server library from /opt/nonroot/scripts. Check that it exists and is readable."
+        print_validation_error "Could not load the $(web_server_type) web server library from /home/nonroot/scripts. Check that it exists and is readable."
     fi
 
     return "$error_code"
@@ -115,7 +115,7 @@ is_web_server_running() {
 web_server_start() {
     info "Starting $(web_server_type) in background"
     if [[ "${SERVICE_MANAGER:-}" = "systemd" ]]; then
-        systemctl start "$(web_server_type).service"
+        systemctl start "technobureau.$(web_server_type).service"
     else
         "${ROOT_DIR}/scripts/$(web_server_type)/start.sh"
     fi
@@ -133,7 +133,7 @@ web_server_start() {
 web_server_stop() {
     info "Stopping $(web_server_type)"
     if [[ "${SERVICE_MANAGER:-}" = "systemd" ]]; then
-        systemctl stop "$(web_server_type).service"
+        systemctl stop "technobureau.$(web_server_type).service"
     else
         "${ROOT_DIR}/scripts/$(web_server_type)/stop.sh"
     fi
@@ -151,7 +151,7 @@ web_server_stop() {
 web_server_restart() {
     info "Restarting $(web_server_type)"
     if [[ "${SERVICE_MANAGER:-}" = "systemd" ]]; then
-        systemctl restart "$(web_server_type).service"
+        systemctl restart "technobureau.$(web_server_type).service"
     else
         "${ROOT_DIR}/scripts/$(web_server_type)/restart.sh"
     fi
@@ -168,7 +168,7 @@ web_server_restart() {
 #########################
 web_server_reload() {
     if [[ "${SERVICE_MANAGER:-}" = "systemd" ]]; then
-        systemctl reload "$(web_server_type).service"
+        systemctl reload "technobureau.$(web_server_type).service"
     else
         "${ROOT_DIR}/scripts/$(web_server_type)/reload.sh"
     fi

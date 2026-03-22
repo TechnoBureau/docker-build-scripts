@@ -37,7 +37,9 @@ stderr_print() {
 log() {
     local level="${1}"
     local message="${2}"
-    stderr_print "${level}" "{\"level\": \"${level}\", \"msg\": \"${message}\"}"
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    stderr_print "${level}" "{\"level\": \"${level}\", \"ts\": \"${timestamp}\", \"msg\": \"${message}\"}"
 }
 
 ########################

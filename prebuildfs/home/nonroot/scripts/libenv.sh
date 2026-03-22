@@ -3,13 +3,7 @@
 # shellcheck disable=SC1091
 
 # Specify the output file
-if [ ! -d "${HOME}/scripts" ]; then
-    if command -v mkdir >/dev/null 2>&1; then
-        mkdir -p "${HOME}/scripts"
-        info "Directory created: ${HOME}/scripts"
-    fi
-fi
-
+mkdir -p "${HOME}/scripts/"
 output_file="${HOME}/scripts/default-env.sh"
 
 # Regular expression pattern to exclude variable names

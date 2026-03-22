@@ -1,6 +1,6 @@
 # Docker Scripts
 
-This directory contains scripts for Docker/container image creation, configuration, and hardening for docker environments.
+This directory contains scripts for Docker/container image creation, configuration, and hardening for webMethods environments.
 
 ## Overview
 
