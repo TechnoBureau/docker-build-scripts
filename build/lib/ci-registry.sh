@@ -38,6 +38,8 @@ if [[ -z "${CI_ECR_LOADED:-}" ]]; then
     source "${LIB_DIR}/ci-ecr.sh" 2>/dev/null || true
 fi
 
+
+
 # ci_get_raw_aws_credentials
 # Purpose:
 #   Get raw AWS access key and secret key from environment (before token conversion)
@@ -57,27 +59,27 @@ fi
 ci_get_raw_aws_credentials() {
     local registry="$1"
     [[ -z "$registry" ]] && { log_debug "ci_get_raw_aws: registry required" >&2; return 1; }
-    
+
     # WHY: Build credential key from registry name (same logic as ci_get_registry_crs)
     local key_base
     key_base="$(printf '%s' "$registry" | tr -cs '[:alnum:]' '_' | sed 's/^_*//; s/_*$//')"
     [[ -z "$key_base" ]] && key_base="$(printf '%s' "$registry" | tr -cs '[:alnum:]' '_')"
-    
+
     local user_key="user_${key_base}"
     local pass_key="password_${key_base}"
-    
+
     local user pass
-    
+
     # WHY: Try get_env first (IBM Cloud Toolchain), then environment variables
     if command -v get_env >/dev/null 2>&1; then
         user="$(get_env "$user_key" "" 2>/dev/null || true)"
         pass="$(get_env "$pass_key" "" 2>/dev/null || true)"
     fi
-    
+
     # Fallback to direct environment variables
     [[ -z "$user" ]] && user="${!user_key:-}"
     [[ -z "$pass" ]] && pass="${!pass_key:-}"
-    
+
     # WHY: Return credentials only if both are present
     [[ -n "$user" && -n "$pass" ]] && { printf '%s:%s\n' "$user" "$pass"; return 0; }
     return 1
@@ -104,17 +106,17 @@ ci_aws_login() {
     local access_key="$1"
     local secret_key="$2"
     local region="${3:-us-east-1}"
-    
+
     [[ -z "$access_key" || -z "$secret_key" ]] && {
         log_debug "ci_aws_login: access_key and secret_key required" >&2
         return 1
     }
-    
+
     command -v aws >/dev/null 2>&1 || {
         log_debug "ci_aws_login: aws cli not found" >&2
         return 1
     }
-    
+
     # WHY: Use inline environment variables for security - credentials only visible to this command
     # No export means credentials don't persist in the shell environment
     if ! AWS_ACCESS_KEY_ID="$access_key" AWS_SECRET_ACCESS_KEY="$secret_key" AWS_DEFAULT_REGION="$region" \
@@ -122,7 +124,7 @@ ci_aws_login() {
         log_debug "ci_aws_login: authentication failed - invalid credentials" >&2
         return 1
     fi
-    
+
     return 0
 }
 
@@ -143,15 +145,15 @@ ci_generate_ecr_token() {
     local region="$1"
     local access_key="${2:-}"
     local secret_key="${3:-}"
-    
+
     [[ -z "$region" ]] && { log_debug "ci_generate_ecr_token: region required" >&2; return 1; }
-    
+
     command -v aws >/dev/null 2>&1 || { log_debug "ci_generate_ecr_token: aws cli not found" >&2; return 1; }
-    
+
     # WHY: Temporarily disable debug tracing to prevent pollution of token output
     local xtrace_state=""
     [[ $- =~ x ]] && xtrace_state="on" && set +x
-    
+
     local token
     if [[ -n "$access_key" && -n "$secret_key" ]]; then
         # WHY: Use explicit credentials when provided
@@ -161,10 +163,10 @@ ci_generate_ecr_token() {
         # WHY: Fallback to default AWS CLI credentials (IAM role, env vars, config file)
         token="$(aws ecr get-login-password --region "$region" 2>/dev/null || true)"
     fi
-    
+
     # WHY: Restore debug tracing if it was enabled
     [[ "$xtrace_state" == "on" ]] && set -x
-    
+
     [[ -n "$token" ]] && { printf '%s\n' "$token"; return 0; }
     return 1
 }
@@ -179,8 +181,74 @@ ci_get_registry_crs() {
     [[ -z "$key_base" ]] && key_base="$(printf '%s' "$registry" | tr -cs '[:alnum:]' '_')"
 
     local user="" token="" _uk="" _tk="" _pair=""
+    local _use_get_secret=false
     local _use_get_env=false
+    command -v get_secret >/dev/null 2>&1 && _use_get_secret=true
     command -v get_env >/dev/null 2>&1 && _use_get_env=true
+
+    # PRIORITY 0: Try dockerconfigjson first (single unified credential source)
+    # WHY: Supports standard Kubernetes dockerconfigjson secret format
+    # Matches registry by longest path first (most specific wins)
+    local dockerconfig_json=""
+    if $_use_get_secret; then
+        dockerconfig_json="$(get_secret "dockerconfigjson" "" 2>/dev/null || true)"
+    fi
+    [[ -z "$dockerconfig_json" ]] && dockerconfig_json="${DOCKERCONFIG_JSON:-}"
+
+    if [[ -n "$dockerconfig_json" ]]; then
+        # WHY: Temporarily disable debug to avoid polluting credential extraction
+        local xtrace_state=""
+        [[ $- =~ x ]] && xtrace_state="on" && set +x
+
+        local decoded_config
+        decoded_config="$(echo "${dockerconfig_json}" | base64 --decode 2>/dev/null || true)"
+
+        if [[ -n "$decoded_config" ]] && command -v jq >/dev/null 2>&1; then
+            # WHY: Sort keys by length descending to match most specific path first
+            # Example: "us.icr.io/namespace" matches before "us.icr.io"
+            local keys
+            keys="$(echo "${decoded_config}" | jq -r '.auths | keys[]' 2>/dev/null | \
+                    awk '{ print length, $0 }' | sort -rn | awk '{print $2}' || true)"
+
+            while IFS= read -r auth_key; do
+                [[ -z "$auth_key" ]] && continue
+                # WHY: Match registry URL against auth key (prefix match)
+                if [[ "${registry}" == "${auth_key}"* ]]; then
+                    user="$(echo "${decoded_config}" | jq -r --arg repo "${auth_key}" '.auths[$repo].username // empty' 2>/dev/null || true)"
+                    token="$(echo "${decoded_config}" | jq -r --arg repo "${auth_key}" '.auths[$repo].password // empty' 2>/dev/null || true)"
+                    [[ -n "$user" && -n "$token" ]] && break
+                fi
+            done <<< "$keys"
+        fi
+
+        # WHY: Restore debug tracing if it was enabled
+        [[ "$xtrace_state" == "on" ]] && set -x
+
+        # WHY: For ECR registries, check if we got AWS access keys that need token conversion
+        # If so, don't return yet - let the ECR logic below handle token generation
+        if [[ -n "$user" && -n "$token" ]]; then
+            if [[ "$registry" =~ ^[0-9]{12}\.dkr\.ecr(-fips)?\.([a-z0-9-]+)\.amazonaws\.com$ ]]; then
+                # WHY: Got credentials from dockerconfigjson for ECR registry
+                # Check if it's AWS access keys (need conversion) or pre-generated token (ready to use)
+                if [[ "$user" =~ ^AKIA && "$token" =~ ^[a-zA-Z0-9/+]{40}$ ]]; then
+                    # WHY: AWS access keys - let ECR logic below convert to token
+                    :
+                elif [[ "$user" == "AWS" ]]; then
+                    # WHY: Pre-generated ECR token - return immediately
+                    printf '%s:%s\n' "$user" "$token"
+                    return 0
+                else
+                    # WHY: Unknown credential format for ECR - try it anyway
+                    printf '%s:%s\n' "$user" "$token"
+                    return 0
+                fi
+            else
+                # WHY: Non-ECR registry - return credentials as-is
+                printf '%s:%s\n' "$user" "$token"
+                return 0
+            fi
+        fi
+    fi
 
     # Lookup chain: registry-specific → SRC → DST → generic
     # Fills missing user/token from each source in priority order
@@ -200,8 +268,8 @@ ci_get_registry_crs() {
             fi
         fi
         if [[ -z "$token" ]]; then
-            if $_use_get_env; then
-                token="$(get_env "$_tk" "" 2>/dev/null || true)"
+            if $_use_get_secret; then
+                token="$(get_secret "$_tk" "" 2>/dev/null || true)"
             else
                 token="${!_tk-}"
             fi
@@ -236,7 +304,11 @@ ci_get_registry_crs() {
     # ICR: default username "iamapikey"
     if [[ "$registry" =~ ^(.*\.)?icr\.io(/|$) ]]; then
         [[ -z "$user" ]] && user="iamapikey"
-        [[ -n "$token" ]] && { printf '%s:%s\n' "$user" "$token"; user="" token=""; return 0; }
+        if [[ -n "$token" ]]; then
+            printf '%s:%s\n' "$user" "$token"
+            user="" token=""
+            return 0
+        fi
         user="" token=""
         return 1
     fi
@@ -251,7 +323,11 @@ ci_get_registry_crs() {
         esac
     fi
 
-    [[ -n "$user" && -n "$token" ]] && { printf '%s:%s\n' "$user" "$token"; user="" token=""; return 0; }
+    if [[ -n "$user" && -n "$token" ]]; then
+        printf '%s:%s\n' "$user" "$token"
+        user="" token=""
+        return 0
+    fi
     user="" token=""
     return 1
 }
@@ -301,7 +377,7 @@ ci_login_to_registry(){
             return 1
             ;;
     esac
-    
+
     # WHY: Check login result and provide clear feedback
     if [[ $? -eq 0 ]]; then
         log_info "  ✓ Successfully logged into $registry"
@@ -352,7 +428,7 @@ ci_resolve_authfile(){
 ci_login_all_registries() {
     log_info "Logging into registries..."
     local login_list=()
-    
+
     # PRIORITY 1: Add FROM registries from Dockerfile (for pulling base images)
     local i=0
     while true; do
@@ -362,7 +438,7 @@ ci_login_all_registries() {
         login_list+=("$from_reg")
         ((i++))
     done
-    
+
     # PRIORITY 2: Add push registries from REGISTRIES array
     for reg_entry in "${REGISTRIES[@]:-}"; do
         local reg_name
@@ -410,28 +486,28 @@ ci_login_all_registries() {
 ci_prepull_from_images() {
     local dockerfile="$1"
     local engine="$2"
-    
+
     log_info "Pre-pulling FROM images..."
     local -a pulled_images=()
-    
+
     while IFS= read -r line || [[ -n "$line" ]]; do
         # Skip comments
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        
+
         # Match FROM statement
         if [[ "$line" =~ ^[[:space:]]*FROM[[:space:]]+(.+)$ ]]; then
             local from_clause="${BASH_REMATCH[1]}"
-            
+
             # Remove --platform=... if present
             from_clause=$(echo "$from_clause" | sed -E 's/--platform=[^[:space:]]+[[:space:]]+//')
-            
+
             # Extract image reference
             local image_ref
             image_ref=$(echo "$from_clause" | awk '{print $1}')
-            
+
             # Skip scratch and build stage references
             [[ "$image_ref" =~ ^(scratch|[a-z][a-z0-9_-]*)$ ]] && continue
-            
+
             log_info "Pre-pulling: $image_ref"
             if [[ "$engine" == "docker" ]]; then
                 if docker pull "$image_ref" 2>&1 | grep -v '^[a-f0-9]\{64\}$'; then
@@ -450,7 +526,7 @@ ci_prepull_from_images() {
             fi
         fi
     done < "$dockerfile"
-    
+
     # Return pulled images as space-separated string
     printf '%s\n' "${pulled_images[@]}"
 }
@@ -473,9 +549,9 @@ ci_cleanup_pulled_images() {
     local engine="$1"
     shift
     local -a images=("$@")
-    
+
     [[ ${#images[@]} -eq 0 ]] && return 0
-    
+
     log_info "Cleaning up pre-pulled FROM images..."
     for img in "${images[@]}"; do
         log_debug "Removing pre-pulled image: $img"

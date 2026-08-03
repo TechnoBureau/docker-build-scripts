@@ -239,6 +239,7 @@ ci_generate_tag(){
 get_runner_id() {
     [[ -n "${PR_NUMBER:-}" ]] && echo "$PR_NUMBER" && return
     [[ -n "${ISSUE_NUMBER:-}" ]] && echo "$ISSUE_NUMBER" && return
+    [[ -n "${CONFIG[GIT_COMMIT_ID]:-}" ]] && echo "${CONFIG[GIT_COMMIT_ID]}" && return
     [[ -n "${GITHUB_RUN_ID:-}" ]] && echo "$GITHUB_RUN_ID" && return
     [[ -n "${GITHUB_RUN_NUMBER:-}" ]] && echo "$GITHUB_RUN_NUMBER" && return
     [[ -n "${CI_JOB_ID:-}" ]] && echo "$CI_JOB_ID" && return

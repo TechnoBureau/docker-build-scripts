@@ -51,12 +51,12 @@ source "${LIB_DIR}/ci-promote.sh"
 # =============================================================================
 # GLOBAL VARIABLES AND DEFAULTS
 # =============================================================================
-SOURCE_REGISTRY=""
-TARGET_REGISTRY=""
-SOURCE_PREFIX=""
-TARGET_PREFIX=""
-IMAGE_LIST=""
-PARALLEL=2
+: "${SOURCE_REGISTRY:=}"
+: "${TARGET_REGISTRY:=}"
+: "${PIPELINE_SRC_PREFIX:=}"
+: "${PIPELINE_PREFIX:=}"
+: "${PIPELINE_IMAGE_LIST:=}"
+: "${PARALLEL:=2}"
 
 # =============================================================================
 # DISPLAY USAGE INFORMATION
@@ -101,9 +101,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -s|--source-registry) SOURCE_REGISTRY="$2"; shift 2;;
         -r|--target-registry) TARGET_REGISTRY="$2"; shift 2;;
-        -p|--prefix) SOURCE_PREFIX="$2"; shift 2;;
-        -d|--dst-prefix) TARGET_PREFIX="$2"; shift 2;;
-        -l|--image-list) IMAGE_LIST="$2"; shift 2;;
+        -p|--prefix) PIPELINE_SRC_PREFIX="$2"; shift 2;;
+        -d|--dst-prefix) PIPELINE_PREFIX="$2"; shift 2;;
+        -l|--image-list) PIPELINE_IMAGE_LIST="$2"; shift 2;;
         --parallel) PARALLEL="$2"; shift 2;;
         -h|--help) usage;;
         *) log_error "Unknown argument: $1"; usage;;
@@ -115,7 +115,7 @@ done
 # =============================================================================
 [[ -z "$SOURCE_REGISTRY" ]] && { log_error "Source registry required (-s)"; usage; }
 [[ -z "$TARGET_REGISTRY" ]] && { log_error "Target registry required (-r)"; usage; }
-[[ -z "$IMAGE_LIST" ]] && { log_error "Image list required (-l)"; usage; }
+[[ -z "$PIPELINE_IMAGE_LIST" ]] && { log_error "Image list required (-l)"; usage; }
 
 # WHY: Validate and cap parallel workers to prevent resource exhaustion
 if ! [[ "$PARALLEL" =~ ^[1-9][0-9]*$ ]]; then
@@ -129,10 +129,10 @@ fi
 # =============================================================================
 log_info "=== Image Promotion Configuration ==="
 log_info "Source registry: ${SOURCE_REGISTRY}"
-log_info "Source prefix: ${SOURCE_PREFIX:-<none>}"
+log_info "Source prefix: ${PIPELINE_SRC_PREFIX:-<none>}"
 log_info "Target registry: ${TARGET_REGISTRY}"
-log_info "Target prefix: ${TARGET_PREFIX:-<none>}"
-log_info "Image list: ${IMAGE_LIST}"
+log_info "Target prefix: ${PIPELINE_PREFIX:-<none>}"
+log_info "Image list: ${PIPELINE_IMAGE_LIST}"
 log_info "Parallel workers: ${PARALLEL}"
 log_info "======================================"
 
@@ -166,7 +166,9 @@ parse_image_list() {
         # Skip empty entries
         [[ -z "$image_entry" ]] && continue
 
-        local image_name tag digest=""
+        local image_name digest=""
+        PIPELINE_TAG="$(echo "${PIPELINE_TAG:-}" | tr '[:upper:]' '[:lower:]' | sed 's/[[:space:]]\+/-/g; s/[^a-z0-9._-]//g')"
+        local tag="${PIPELINE_TAG:-}"
 
         # WHY: Parse format: image:tag@digest or image:tag or image@digest
         if [[ "$image_entry" =~ ^([^:@]+):([^@]+)@(.+)$ ]]; then
@@ -182,11 +184,9 @@ parse_image_list() {
             # Format: image@digest (no tag)
             image_name="${BASH_REMATCH[1]}"
             digest="${BASH_REMATCH[2]}"
-            tag="latest"
         else
             # Format: image (no tag or digest)
             image_name="$image_entry"
-            tag="latest"
         fi
 
         # WHY: Store parsed components in parallel arrays
@@ -224,8 +224,8 @@ promote_single_image() {
     # WHY: Build source image reference with full path
     # Format: registry/prefix/image:tag or registry/prefix/image@digest
     local source_image
-    if [[ -n "$SOURCE_PREFIX" ]]; then
-        source_image="${SOURCE_REGISTRY}/${SOURCE_PREFIX}/${image_name}"
+    if [[ -n "$PIPELINE_SRC_PREFIX" ]]; then
+        source_image="${SOURCE_REGISTRY}/${PIPELINE_SRC_PREFIX}/${image_name}"
     else
         source_image="${SOURCE_REGISTRY}/${image_name}"
     fi
@@ -240,13 +240,15 @@ promote_single_image() {
     # WHY: Extract base image name (without path) for target
     local base_image_name="${image_name##*/}"
 
+    if [[ -n "${PIPELINE_TAG:-}" && "$tag" != "$PIPELINE_TAG" ]]; then
+        tag="$PIPELINE_TAG"
+    fi
+
     log_info "Promoting image [$((index + 1))/${#IMAGE_NAMES[@]}]: ${image_name}"
-    log_debug "  Source: ${source_image}"
-    log_debug "  Target: ${TARGET_REGISTRY}/${TARGET_PREFIX:+${TARGET_PREFIX}/}${base_image_name}:${tag}"
 
     # WHY: Call ci_promote_image with all required parameters
     # Parameters: source_image, dest_registry, dest_prefix, image_name, dest_tag, source_registry
-    if ci_promote_image "$source_image" "$TARGET_REGISTRY" "$TARGET_PREFIX" \
+    if ci_promote_image "$source_image" "$TARGET_REGISTRY" "$PIPELINE_PREFIX" \
                         "$base_image_name" "$tag" "$SOURCE_REGISTRY"; then
         log_success "Promoted: ${image_name}:${tag}"
         return 0
@@ -341,7 +343,7 @@ main() {
     }
 
     # WHY: Parse image list string and segregate into component arrays
-    if ! parse_image_list "$IMAGE_LIST"; then
+    if ! parse_image_list "$PIPELINE_IMAGE_LIST"; then
         log_error "Failed to parse image list"
         exit 1
     fi

@@ -44,6 +44,14 @@ detect_arch() {
 get_latest_version() {
     curl -sL https://dl.k8s.io/release/stable.txt
 }
+get_stable_for_minor() {
+    local minor_version="$1"
+
+    # remove leading 'v'
+    local clean_version="${minor_version#v}"
+
+    curl -sL "https://dl.k8s.io/release/stable-${clean_version}.txt"
+}
 
 # ========= FUNCTION: Download kubectl =========
 download_kubectl() {
@@ -68,9 +76,21 @@ install_kubectl() {
     os=$(detect_os)
     arch=$(detect_arch)
 
+    # Decide version
     if [[ "$KUBECTL_VERSION" == "latest" ]]; then
         version=$(get_latest_version)
+
+    elif [[ "$KUBECTL_VERSION" =~ ^v[0-9]+\.[0-9]+$ ]]; then
+        # Only major.minor provided → resolve latest patch
+        version=$(get_stable_for_minor "$KUBECTL_VERSION")
+
+        # Fallback if not found
+        if [[ -z "$version" ]]; then
+            version=$(get_latest_version)
+        fi
+
     else
+        # Full version like v1.33.12 → use directly
         version="$KUBECTL_VERSION"
     fi
 

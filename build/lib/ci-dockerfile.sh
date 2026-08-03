@@ -100,11 +100,51 @@ parse_dockerfile_secrets() {
     # Match: --mount=type=secret,id=NAME   (anywhere on the line)
     while [[ $content =~ --mount=type=secret,[^,]*id=([A-Za-z0-9_][A-Za-z0-9_.-]*) ]]; do
         secret_id="${BASH_REMATCH[1]}"
-        CONFIG["SECRET_${secret_id^^}"]="present"
-        log_info "Dockerfile secret → ${secret_id^^}"
+        CONFIG["SECRET_${secret_id}"]="present"
+        log_info "Dockerfile secret → ${secret_id}"
         # Remove the matched portion so we can find the next one
         content="${content#*--mount=type=secret,*id=${secret_id}}"
     done
+}
+
+# =============================================================================
+# parse_dockerfile_args
+# Purpose:
+#   Scan Dockerfile for ARG declarations to auto-detect build arguments
+#   Handles line continuations and ARG with default values
+# Input:
+#   $1 - Dockerfile path
+# Output:
+#   Populates CONFIG[ARG_NAME] = "present" for each detected ARG
+# WHY:
+#   Auto-detect required build args so they can be passed during build
+# =============================================================================
+parse_dockerfile_args() {
+    local file="$1"
+    [[ ! -f "$file" ]] && { log_warn "Dockerfile not found for ARG scan: $file"; return 0; }
+
+    # Normalize line continuations (replace \<newline> with a single space)
+    local content
+    content=$(awk '
+        { gsub(/\\$/, ""); line = line $0 " " }
+        /\\$/ { next }
+        { print line; line="" }
+        END { if (line) print line }
+    ' "$file")
+
+    local arg_name
+    # Match: ARG NAME or ARG NAME=default_value
+    while read -r line; do
+        # Skip comments
+        [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        
+        # Match ARG declaration (case-insensitive)
+        if [[ "$line" =~ ^[[:space:]]*ARG[[:space:]]+([A-Za-z_][A-Za-z0-9_]*)(=.*)?$ ]]; then
+            arg_name="${BASH_REMATCH[1]}"
+            CONFIG["ARG_${arg_name}"]="present"
+            log_info "Dockerfile ARG → ${arg_name}"
+        fi
+    done <<< "$content"
 }
 
 # =============================================================================
@@ -137,11 +177,97 @@ parse_dockerfile_from_images() {
 
     local -A seen_registries=()
     local registry_index=0
+    
+    # WHY: Helper function to extract and store registry from image reference
+    extract_and_store_registry() {
+        local image_ref="$1"
+        local registry="" namespace=""
+        
+        # Remove :tag or @digest from image reference
+        image_ref="${image_ref%%:*}"
+        image_ref="${image_ref%%@*}"
+        
+        # Skip scratch and build stage references
+        [[ "$image_ref" =~ ^(scratch|[a-z][a-z0-9_-]*)$ ]] && return 0
+        
+        # WHY: Handle different image reference formats:
+        # - registry.io/namespace/prefix/image
+        # - registry.io/image
+        # - image (defaults to docker.io)
+        if [[ "$image_ref" =~ ^([^/]+\.[^/]+)/(.+)$ ]]; then
+            # Has registry with dot (e.g., icr.io/namespace/image)
+            local reg_part="${BASH_REMATCH[1]}"
+            local path_part="${BASH_REMATCH[2]}"
+            
+            # WHY: Special handling for ICR - extract first TWO path components (namespace/prefix)
+            # ICR credentials are scoped at namespace level, not per-image
+            # Format: icr.io/namespace/prefix/subdir/.../image
+            # Extract: icr.io/namespace/prefix (first 2 components)
+            if [[ "$reg_part" =~ icr\.io$ ]]; then
+                if [[ "$path_part" =~ ^([^/]+)/([^/]+)/ ]]; then
+                    # Has namespace/prefix/... format
+                    local ns="${BASH_REMATCH[1]}"
+                    local prefix="${BASH_REMATCH[2]}"
+                    registry="${reg_part}/${ns}/${prefix}"
+                    log_debug "Extracted ICR registry: $registry (namespace=$ns, prefix=$prefix)"
+                elif [[ "$path_part" =~ ^([^/]+)/(.+)$ ]]; then
+                    # Has only namespace/image format
+                    namespace="${BASH_REMATCH[1]}"
+                    registry="${reg_part}/${namespace}"
+                    log_debug "Extracted ICR registry: $registry (namespace only)"
+                else
+                    # No path components
+                    registry="$reg_part"
+                    log_debug "Extracted ICR registry (no namespace): $registry"
+                fi
+            else
+                # Non-ICR registry - just use the hostname
+                registry="$reg_part"
+                log_debug "Extracted registry: $registry"
+            fi
+        elif [[ "$image_ref" =~ ^([^/]+)/([^/]+)/(.+)$ ]]; then
+            # Format: namespace/repo/image (assume docker.io)
+            registry="docker.io"
+            log_debug "Extracted default registry: $registry"
+        elif [[ "$image_ref" =~ / ]]; then
+            # Has slash but no dot - likely docker.io/library or docker.io/user
+            registry="docker.io"
+            log_debug "Extracted default registry: $registry"
+        else
+            # No registry specified - defaults to docker.io
+            registry="docker.io"
+            log_debug "Extracted default registry: $registry"
+        fi
+        
+        # Store unique registries
+        if [[ -n "$registry" && -z "${seen_registries[$registry]:-}" ]]; then
+            seen_registries[$registry]=1
+            CONFIG["FROM_REGISTRY_${registry_index}"]="$registry"
+            log_info "Dockerfile image source → registry: $registry"
+            ((registry_index++))
+        fi
+    }
 
     # Match FROM statements: FROM [--platform=...] registry/image:tag
     while read -r line; do
         # Skip comments
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
+        
+        # WHY: Also extract registries from ARG default values
+        # Format: ARG varname=registry/image:tag
+        if [[ "$line" =~ ^[[:space:]]*ARG[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=(.+)$ ]]; then
+            local arg_value="${BASH_REMATCH[1]}"
+            # Remove quotes if present
+            arg_value="${arg_value#\"}"
+            arg_value="${arg_value#\'}"
+            arg_value="${arg_value%\"}"
+            arg_value="${arg_value%\'}"
+            # Extract image reference (remove :tag if present for cleaner parsing)
+            local image_ref
+            image_ref=$(echo "$arg_value" | awk '{print $1}')
+            extract_and_store_registry "$image_ref"
+            continue
+        fi
         
         # Match FROM statement (case-insensitive)
         if [[ "$line" =~ ^[[:space:]]*FROM[[:space:]]+(.+)$ ]]; then
@@ -154,68 +280,8 @@ parse_dockerfile_from_images() {
             local image_ref
             image_ref=$(echo "$from_clause" | awk '{print $1}')
             
-            # Skip scratch and build stage references
-            [[ "$image_ref" =~ ^(scratch|[a-z][a-z0-9_-]*)$ ]] && continue
-            
-            # Extract registry from image reference
-            local registry=""
-            local namespace=""
-            
-            # WHY: Handle different image reference formats:
-            # - registry.io/namespace/image:tag
-            # - registry.io/image:tag
-            # - image:tag (defaults to docker.io)
-            if [[ "$image_ref" =~ ^([^/]+\.[^/]+)/(.+)$ ]]; then
-                # Has registry with dot (e.g., icr.io/namespace/image)
-                local reg_part="${BASH_REMATCH[1]}"
-                local path_part="${BASH_REMATCH[2]}"
-                
-                # WHY: Special handling for ICR - extract namespace/prefix as part of registry
-                # ICR format: icr.io/namespace/prefix/image:tag
-                # We want: registry=icr.io/namespace/prefix, not just icr.io
-                if [[ "$reg_part" =~ icr\.io$ ]]; then
-                    # Extract first TWO path components (namespace/prefix)
-                    if [[ "$path_part" =~ ^([^/]+)/([^/]+)/(.+)$ ]]; then
-                        # Has namespace/prefix/image format
-                        local ns="${BASH_REMATCH[1]}"
-                        local prefix="${BASH_REMATCH[2]}"
-                        registry="${reg_part}/${ns}/${prefix}"
-                        log_debug "FROM image → ICR registry: $registry (namespace=$ns, prefix=$prefix)"
-                    elif [[ "$path_part" =~ ^([^/]+)/(.+)$ ]]; then
-                        # Has only namespace/image format
-                        namespace="${BASH_REMATCH[1]}"
-                        registry="${reg_part}/${namespace}"
-                        log_debug "FROM image → ICR registry: $registry (namespace only)"
-                    else
-                        # No path components
-                        registry="$reg_part"
-                        log_debug "FROM image → ICR registry (no namespace): $registry"
-                    fi
-                else
-                    registry="$reg_part"
-                    log_debug "FROM image → registry: $registry"
-                fi
-            elif [[ "$image_ref" =~ ^([^/]+)/([^/]+)/(.+)$ ]]; then
-                # Format: namespace/repo/image (assume docker.io)
-                registry="docker.io"
-                log_debug "FROM image → default registry: $registry"
-            elif [[ "$image_ref" =~ / ]]; then
-                # Has slash but no dot - likely docker.io/library or docker.io/user
-                registry="docker.io"
-                log_debug "FROM image → default registry: $registry"
-            else
-                # No registry specified - defaults to docker.io
-                registry="docker.io"
-                log_debug "FROM image → default registry: $registry"
-            fi
-            
-            # Store unique registries
-            if [[ -n "$registry" && -z "${seen_registries[$registry]:-}" ]]; then
-                seen_registries[$registry]=1
-                CONFIG["FROM_REGISTRY_${registry_index}"]="$registry"
-                log_info "Dockerfile FROM → registry: $registry"
-                ((registry_index++))
-            fi
+            # Use helper function to extract and store registry
+            extract_and_store_registry "$image_ref"
         fi
     done <<< "$content"
     

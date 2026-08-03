@@ -50,7 +50,7 @@ version_compare() {
     local IFS='.'
     read -ra ver1 <<< "$1"
     read -ra ver2 <<< "$2"
-    
+
     for ((i=0; i<${#ver1[@]} || i<${#ver2[@]}; i++)); do
         local v1="${ver1[i]:-0}" v2="${ver2[i]:-0}"
         ((v1 > v2)) && return 0
@@ -79,12 +79,12 @@ create_symlink() {
 
 detect_openssl_path() {
     local search_paths=("/usr" "/usr/local" "/opt/openssl" "/usr/local/ssl")
-    
+
     if pkg-config --exists openssl 2>/dev/null; then
         pkg-config --variable=prefix openssl
         return 0
     fi
-    
+
     for path in "${search_paths[@]}"; do
         if [[ -f "${path}/include/openssl/ssl.h" ]]; then
             if [[ -f "${path}/lib/libssl.so" ]] || [[ -f "${path}/lib64/libssl.so" ]] || \
@@ -100,7 +100,7 @@ detect_openssl_path() {
 install_rhel_packages() {
     local pkg_manager="$1"
     "$pkg_manager" groupinstall -y -q "Development Tools" 2>/dev/null || true
-    
+
     local packages=(
         "openssl-devel" "openssl-libs" "bzip2-devel" "libffi-devel"
         "zlib-devel" "readline-devel" "sqlite-devel" "tk-devel"
@@ -116,17 +116,17 @@ detect_or_install_python() {
     local min_major="${MIN_PYTHON_VERSION%%.*}"
     local min_minor="${MIN_PYTHON_VERSION#*.}"
     min_minor="${min_minor%%.*}"
-    
+
     log_info "Searching for Python ${MIN_PYTHON_VERSION}+..." >&2
-    
+
     local python_candidates=("python3.20" "python3.19" "python3.18" "python3.17" "python3.16" "python3.15" "python3.14" "python3.13" "python3.12" "python3" "python")
     local found_without_ssl=""
-    
+
     for cmd in "${python_candidates[@]}"; do
         if command -v "$cmd" >/dev/null 2>&1; then
             local version
             version=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')" 2>/dev/null || echo "0.0.0")
-            
+
             if version_compare "$version" "${MIN_PYTHON_VERSION}"; then
                 if "$cmd" -c "import ssl" 2>/dev/null; then
                     log_success "Found Python: $cmd (v$version) with SSL" >&2
@@ -139,12 +139,12 @@ detect_or_install_python() {
             fi
         fi
     done
-    
+
     [[ -n "$found_without_ssl" ]] && log_warning "Will rebuild Python with SSL..." >&2
-    
+
     log_warning "Python ${MIN_PYTHON_VERSION}+ not found. Installing..." >&2
     install_python_from_source
-    
+
     # Try multiple possible binary names after installation
     local installed_python=""
     for python_bin in "${PYTHON_INSTALL_DIR}/bin/python${MIN_PYTHON_VERSION}" "${PYTHON_INSTALL_DIR}/bin/python3" "${PYTHON_INSTALL_DIR}/bin/python"; do
@@ -153,7 +153,7 @@ detect_or_install_python() {
             break
         fi
     done
-    
+
     if [[ -x "$installed_python" ]]; then
         log_success "Python installed: $installed_python" >&2
         echo "$installed_python"
@@ -167,24 +167,24 @@ detect_or_install_python() {
 install_python_from_source() {
     local original_dir="$PWD"
     local temp_dir=$(mktemp -d)
-    
+
     # Cleanup function to ensure we return to original directory and remove temp
     cleanup_python_install() {
         cd "$original_dir" 2>/dev/null || cd /
         rm -rf "$temp_dir"
     }
-    
-    
+
+
     local python_version
     python_version=$(curl -sL https://www.python.org/ftp/python/ | \
         grep -oP ">${MIN_PYTHON_VERSION}\.\d+/" | \
         sed 's/[>/]//g' | sort -V | tail -n1)
-    
+
     python_version="${python_version:-${MIN_PYTHON_VERSION}.0}"
-    
+
     local download_url="https://www.python.org/ftp/python/${python_version}/Python-${python_version}.tgz"
     cd "$temp_dir" || { cleanup_python_install; exit 1; }
-    
+
     # Install build dependencies
     if command -v microdnf >/dev/null 2>&1; then
         install_rhel_packages "microdnf" >&2
@@ -197,26 +197,26 @@ install_python_from_source() {
         cleanup_python_install
         exit 1
     fi
-    
+
     # Detect OpenSSL
     local openssl_dir
     openssl_dir=$(detect_openssl_path)
-    
+
     if [[ -z "$openssl_dir" ]]; then
         log_error "OpenSSL not found. Please install openssl-devel or libssl-dev" >&2
         cleanup_python_install
         exit 1
     fi
-    
-    
+
+
     # Determine lib directory (lib vs lib64)
     local lib_dir="lib"
     [[ -d "${openssl_dir}/lib64" ]] && lib_dir="lib64"
-    
+
     # Download Python
     local download_file="Python-${python_version}.tgz"
     local max_retries=3 attempt=1
-    
+
     while [[ $attempt -le $max_retries ]]; do
         if curl -fL --progress-bar --connect-timeout 30 --max-time 300 \
                 --tlsv1.2 --proto '=https' -o "$download_file" "$download_url" 2>&2; then
@@ -227,14 +227,14 @@ install_python_from_source() {
         ((attempt++))
         [[ $attempt -le $max_retries ]] && sleep 5
     done
-    
+
     [[ ! -s "$download_file" ]] && { log_error "Download failed after $max_retries attempts" >&2; cleanup_python_install; exit 1; }
-    
+
     tar -xzf "$download_file" >&2
     cd "Python-${python_version}" || { cleanup_python_install; exit 1; }
-        
+
     export LD_RUN_PATH="${openssl_dir}/${lib_dir}:${PYTHON_INSTALL_DIR}/lib"
-    
+
     local configure_flags=(
         "--prefix=${PYTHON_INSTALL_DIR}"
         "--enable-ipv6"
@@ -245,21 +245,21 @@ install_python_from_source() {
         "--with-openssl-rpath=auto"
         "--with-ssl-default-suites=openssl"
     )
-    
+
     # Use system libmpdec if available
     if pkg-config --exists libmpdec 2>/dev/null || [[ -f "/usr/include/mpdecimal.h" ]]; then
         configure_flags+=("--with-system-libmpdec")
     fi
-    
+
     ./configure "${configure_flags[@]}" \
         CPPFLAGS="-I${openssl_dir}/include" \
         LDFLAGS="-L${openssl_dir}/${lib_dir} -Wl,-rpath,${openssl_dir}/${lib_dir} -Wl,-rpath,${PYTHON_INSTALL_DIR}/lib" \
         CFLAGS="-fPIC" >&2
-    
+
     make -j"$(nproc)" >&2
-    
+
     make altinstall >&2
-    
+
     # Verify SSL
     local python_binary="${PYTHON_INSTALL_DIR}/bin/python${MIN_PYTHON_VERSION}"
     if [[ -x "$python_binary" ]] && "$python_binary" -c "import ssl; print('SSL OK')" >/dev/null 2>&1; then
@@ -268,16 +268,16 @@ install_python_from_source() {
         log_error "SSL module not available - check OpenSSL installation" >&2
         # Don't exit here - continue with installation
     fi
-    
+
     # Create symlinks (non-critical - continue even if they fail)
     local bin_dir="${PYTHON_INSTALL_DIR}/bin"
     create_symlink "python${MIN_PYTHON_VERSION}" "${bin_dir}/python3" || true
     create_symlink "python3" "${bin_dir}/python" || true
     create_symlink "pip${MIN_PYTHON_VERSION}" "${bin_dir}/pip3" || true
     create_symlink "pip3" "${bin_dir}/pip" || true
-    
+
     log_success "Python ${python_version} installed to ${PYTHON_INSTALL_DIR}" >&2
-    
+
     # Cleanup temp directory and return to original location
     cleanup_python_install
 }
@@ -289,17 +289,17 @@ create_venv() {
         log_error "Failed to create virtual environment" >&2
         exit 1
     fi
-    
+
     # Copy Python shared libraries to venv lib directory
     # This is necessary when using --copies flag to ensure the copied Python binary can find its libraries
     local venv_lib_dir="${VENV_PATH}/lib"
     mkdir -p "$venv_lib_dir"
-    
+
     # Copy libpython shared libraries from the installation directory
     if [[ -d "${PYTHON_INSTALL_DIR}/lib" ]]; then
         cp -f "${PYTHON_INSTALL_DIR}/lib/libpython${MIN_PYTHON_VERSION}.so"* "$venv_lib_dir/" 2>/dev/null || true
     fi
-    
+
     # Copy the entire Python standard library including lib-dynload
     if [[ -d "${PYTHON_INSTALL_DIR}/lib/python${MIN_PYTHON_VERSION}" ]]; then
         cp -r "${PYTHON_INSTALL_DIR}/lib/python${MIN_PYTHON_VERSION}" "$venv_lib_dir/" 2>/dev/null || true
@@ -311,7 +311,7 @@ create_venv() {
         cp -f "${PYTHON_INSTALL_DIR}/lib/libpython${MIN_PYTHON_VERSION}.so"* "${chroot}/${PYTHON_INSTALL_DIR}/lib/" 2>/dev/null || true
         cp -r "${PYTHON_INSTALL_DIR}/lib/python${MIN_PYTHON_VERSION}" "${chroot}/${PYTHON_INSTALL_DIR}/lib/" 2>/dev/null || true
     fi
-         
+
     source "$VENV_PATH/bin/activate"
 }
 
@@ -323,7 +323,7 @@ install_requirements() {
             PIP_ARGS+=" --no-deps "
         fi
         pip install $PIP_ARGS -r "$REQUIREMENTS_FILE"
-        
+
     else
         log_info "No requirements file found, skipping"
     fi
@@ -331,12 +331,12 @@ install_requirements() {
 
 uninstall_packages() {
     [[ ! -f "$UNINSTALL_FILE" ]] && { log_info "No uninstall file, skipping"; return; }
-    
+
     log_info "Uninstalling packages from: $UNINSTALL_FILE"
     while IFS= read -r package || [[ -n "$package" ]]; do
         package=$(echo "$package" | xargs)
         [[ -z "$package" ]] && continue
-        
+
         if ! pip uninstall -y "$package" 2>/dev/null; then
             pip uninstall -y --break-system-packages "$package" 2>/dev/null || \
                 log_error "Failed to uninstall: $package" >&2
@@ -353,14 +353,13 @@ cleanup_pip() {
         log_info "Removing pip package files from ${site_packages_dir}"
         rm -rf "${site_packages_dir}/pip"* 2>/dev/null || true
         rm -rf "${site_packages_dir}/setuptools"* 2>/dev/null || true
-        rm -rf "${site_packages_dir}/_distutils_hack"* 2>/dev/null || true
         log_success "Removed pip and related package files from site-packages"
     fi
 }
 
 cleanup_system_python() {
     log_info "Removing Python binaries and pip from system installation"
-    
+
     # Remove Python binaries from system installation directory
     local bin_dir="${PYTHON_INSTALL_DIR}/bin"
     if [[ -d "$bin_dir" ]]; then
@@ -380,7 +379,7 @@ cleanup_system_python() {
         rm -f "${bin_dir}/2to3" 2>/dev/null || true
         log_success "Removed Python binaries from ${bin_dir}"
     fi
-    
+
     # Remove pip package files from site-packages to address security vulnerabilities
     local site_packages_dir=""
     if [[ ! -z "${chroot}" ]]; then
@@ -395,7 +394,7 @@ cleanup_system_python() {
         rm -rf "${site_packages_dir}/_distutils_hack"* 2>/dev/null || true
         log_success "Removed pip and related package files from site-packages"
     fi
-    
+
     # Keep the shared libraries in ${PYTHON_INSTALL_DIR}/lib as they are needed by venv
     log_info "Keeping Python shared libraries in ${PYTHON_INSTALL_DIR}/lib for venv usage"
 }
@@ -403,21 +402,21 @@ cleanup_system_python() {
 # ========= MAIN =========
 main() {
     mkdir -p "$(dirname "$VENV_PATH")" "$TARGET_HOME/tmp"
-    
+
     PYTHON_BIN=$(detect_or_install_python)
     log_info "Using: $PYTHON_BIN"
-    
+
     local python_version
     python_version=$("$PYTHON_BIN" --version 2>&1 | head -n1)
     log_info "Version: $python_version"
-    
+
     create_venv
     install_requirements
     uninstall_packages
     cleanup_pip
     cleanup_system_python
     deactivate
-    
+
     log_success "Setup complete!"
     log_info "Venv: $VENV_PATH"
     log_info "Python: $python_version"

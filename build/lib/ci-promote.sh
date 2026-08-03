@@ -63,12 +63,12 @@ ci_promote_image() {
 
     # Build full_dest (uniform: reg/prefix/image_name:dest_tag)
     local full_dest="${dest_registry}/${dest_prefix:+${dest_prefix}/}${image_name}:${dest_tag}"
-    local authfile="$(ci_resolve_authfile || true)"
+    #local authfile="$(ci_resolve_authfile || true)"
 
     log_info "Promoting ${source_image} → ${full_dest} (digests + signatures)"
 
     local skopeo_args=(--all --preserve-digests)
-    [[ -n "$authfile" ]] && skopeo_args+=(--authfile "$authfile")
+    #[[ -n "$authfile" ]] && skopeo_args+=(--authfile "$authfile")
 
     if skopeo copy "${skopeo_args[@]}" "docker://${source_image}" "docker://${full_dest}" >/dev/null 2>&1; then
         log_success "Promoted → ${full_dest}"
@@ -78,29 +78,31 @@ ci_promote_image() {
     fi
 
     # Signatures (non-blocking; per full_dest)
-    if command -v cosign >/dev/null 2>&1; then
-        cosign copy "${source_image}" "${full_dest}" >/dev/null 2>&1 && \
-            log_info "Signatures copied → ${full_dest}" || \
-            log_warn "Signature copy failed → ${full_dest} (non-critical)"
-    fi
+    # if command -v cosign >/dev/null 2>&1; then
+    #     cosign copy "${source_image}" "${full_dest}" >/dev/null 2>&1 && \
+    #         log_info "Signatures copied → ${full_dest}" || \
+    #         log_warn "Signature copy failed → ${full_dest} (non-critical)"
+    # fi
 
     # === ARTIFACT SAVE ===
     # WHY: Save promoted image artifact for downstream stages (similar to build_and_push)
-    # Only save artifact if ci_store_artifact function is available
-    ci_store_artifact "${full_dest}" || log_warn "Failed to save artifact for ${full_dest}"
+    # Only save artifact if ci_ibmcloud_save_artifact function is available
+    if [[ "$dest_tag" != "latest" ]]; then
+        ci_ibmcloud_save_artifact "${full_dest}" "" "true" || log_warn "Failed to save artifact for ${full_dest}"
+    fi
 
     #### Collect SBOM as part of Promotion as well
     # Generate SBOM
-    local sbom_file
-    sbom_file=$(generate_sbom "${full_dest}")
-    if [[ -n "$sbom_file" && -f "$sbom_file" ]]; then
-        log_info "SBOM: $sbom_file"
-        ci_collect_sbom_evidence "$sbom_file" "${full_dest}"
-    elif [[ -n "$sbom_file" ]]; then
-        log_warn "SBOM generation reported file '$sbom_file' but it was not found on disk"
-    else
-        log_warn "SBOM generation failed"
-    fi
+    # local sbom_file
+    # sbom_file=$(generate_sbom "${full_dest}")
+    # if [[ -n "$sbom_file" && -f "$sbom_file" ]]; then
+    #     log_info "SBOM: $sbom_file"
+    #     ci_collect_sbom_evidence "$sbom_file" "${full_dest}"
+    # elif [[ -n "$sbom_file" ]]; then
+    #     log_warn "SBOM generation reported file '$sbom_file' but it was not found on disk"
+    # else
+    #     log_warn "SBOM generation failed"
+    # fi
     ####
 
     return 0

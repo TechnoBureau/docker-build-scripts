@@ -146,7 +146,7 @@ echo "==> Installing packages into chroot (releasever=$releasever)" >&2
 
 set -x
 # Install requirements for this script (xargs and cmp)
-dnf install -y findutils diffutils
+dnf install -y findutils diffutils sqlite
 # Install core packages to chroot
 rootfs="$(realpath rootfs)"
 mkdir -p "$rootfs"
@@ -221,6 +221,12 @@ rm -rf "$rootfs"/usr/include
 rm -rf "$rootfs"/usr/src
 rm -rf "$rootfs"/usr/share/bash-completion
 rm -rf "$rootfs"/var/lib/rpm/rpmdb.sqlite-*
+rm -rf "$rootfs"/usr/share/licenses
+rm -rf "$rootfs"/usr/share/locale
+rm -rf \
+      "$rootfs"/var/cache/* \
+      "$rootfs"/etc/machine-id \
+      "$rootfs"/etc/{group,gshadow,passwd,shadow}-
 
 
 # Remove static libraries
@@ -241,5 +247,14 @@ for key in /etc/pki/rpm-gpg/*; do
 done
 
 echo "==> Importing Redhat GPG key successful" >&2
+set -x
+# Only rebuild RPM DB if needed
+rpm --root "$rootfs" --verifydb || rpm --root "$rootfs" --rebuilddb
 
-rpm --root "$rootfs" --rebuilddb
+# Change SQLite journal mode only when database exists
+for db in \
+    "$rootfs/var/lib/rpm/rpmdb.sqlite" \
+    "$rootfs/var/lib/dnf/history.sqlite"
+do
+    [ -f "$db" ] && sqlite3 "$db" 'PRAGMA journal_mode=DELETE;' >/dev/null 2>&1 || true
+done

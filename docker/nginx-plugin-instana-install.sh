@@ -172,6 +172,9 @@ main() {
     log "Installing: $file → $DEST_FILE"
     mv "$file" "$DEST_FILE"
 
+    # Special handling for opentracing module (legacy name)
+    mv "ngx_http_opentracing_module.so" "$MODULES_DIR/ngx_http_opentracing_module.so" 2>/dev/null || true
+
     # Add to config only if it's the main tracing module
     if [[ "$CLEAN_NAME" == ngx_http_ot_module.so ]]; then
       RUNTIME_PATH="${DEST_FILE#$ROOTFS_PREFIX}"

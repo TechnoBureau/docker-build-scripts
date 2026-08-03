@@ -58,6 +58,8 @@ source "${LIB_DIR}/ci-build.sh" 2>/dev/null || true
 source "${LIB_DIR}/ci-artifacts.sh" 2>/dev/null || true
 # shellcheck source=/dev/null
 source "${LIB_DIR}/ci-utils.sh" 2>/dev/null || true
+# shellcheck source=/dev/null
+source "${LIB_DIR}/ci-sbom.sh" 2>/dev/null || true
 
 # =============================================================================
 # main_build
@@ -140,7 +142,9 @@ main_build() {
     fi
 
     # Get runner ID for tagging
-    CONFIG[RUNNER_ID]=$(get_runner_id)
+    if [[ -z "${CONFIG[RUNNER_ID]:-}" ]]; then
+        CONFIG[RUNNER_ID]=$(get_runner_id)
+    fi
     log_info "Runner ID: ${CONFIG[RUNNER_ID]}"
 
     # Login to primary registry
@@ -148,7 +152,7 @@ main_build() {
         local primary_registry
         primary_registry=$(echo "${REGISTRIES[0]}" | cut -d, -f1)
         log_info "Logging into primary registry: $primary_registry"
-        ci_login_to_registry "$primary_registry" || log_warn "Registry login failed (continuing anyway)"
+        #ci_login_to_registry "$primary_registry" || log_warn "Registry login failed (continuing anyway)"
     fi
 
     # Determine build context - resolve to absolute path
@@ -216,22 +220,20 @@ main_build() {
         log_info "Primary image: $primary_img"
 
         # Generate SBOM
-        local sbom_file
-        sbom_file=$(generate_sbom "$primary_img")
-        if [[ -n "$sbom_file" && -f "$sbom_file" ]]; then
-            log_info "SBOM: $sbom_file"
-            ci_collect_sbom_evidence "$sbom_file" "$primary_img"
-        elif [[ -n "$sbom_file" ]]; then
-            log_warn "SBOM generation reported file '$sbom_file' but it was not found on disk"
-        else
-            log_warn "SBOM generation failed"
-        fi
+        # local sbom_file
+        # sbom_file=$(generate_sbom "$primary_img")
+        # if [[ -n "$sbom_file" && -f "$sbom_file" ]]; then
+        #     log_info "SBOM: $sbom_file"
+        #     ci_collect_sbom_evidence "$sbom_file" "$primary_img"
+        # elif [[ -n "$sbom_file" ]]; then
+        #     log_warn "SBOM generation reported file '$sbom_file' but it was not found on disk"
+        # else
+        #     log_warn "SBOM generation failed"
+        # fi
 
-        # Save artifact with IBM Cloud API key extraction
-        ci_store_artifact "$primary_img"
 
         # Sign image
-        sign_with_cosign "$primary_img"
+        #sign_with_cosign "$primary_img"
 
         # Remove local images if requested
         if [[ "${REMOVE_LOCAL_IMAGES:-true}" == "true" ]]; then

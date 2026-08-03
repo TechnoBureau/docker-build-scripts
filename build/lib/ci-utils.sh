@@ -39,28 +39,54 @@ readonly REGEX_TAG="^[a-zA-Z0-9._-]+$"
 #   Generate Software Bill of Materials (SBOM) using syft
 # Input:
 #   $1 - image reference
+#   $2 - architecture (optional) - for multi-platform builds
 # Output:
 #   Prints path to SBOM file (SPDX JSON format)
 # Returns:
 #   0 on success, 0 if syft not installed (skip)
 # WHY:
 #   SBOM generation for security compliance and vulnerability scanning
+#   Enhanced to support per-architecture SBOM for multi-platform builds
 # =============================================================================
 generate_sbom() {
     local image="$1"
+    local arch="${2:-}"
 
     if ! command -v syft >/dev/null 2>&1; then
         return 0
     fi
 
     local sbom_file
-    if command -v ci_create_temp_file >/dev/null 2>&1; then
-        sbom_file=$(ci_create_temp_file "sbom")
-    else
-        sbom_file=$(mktemp --tmpdir "${TMPDIR:-/tmp}/sbom.XXXXXX")
+    local file_suffix="sbom"
+    if [[ -n "$arch" ]]; then
+        file_suffix="sbom_${arch}"
     fi
 
-    if syft "$image" -o cyclonedx-json="$sbom_file" >/dev/null 2>&1; then
+    if command -v ci_create_temp_file >/dev/null 2>&1; then
+        sbom_file=$(ci_create_temp_file "$file_suffix")
+    else
+        sbom_file=$(mktemp --tmpdir "${TMPDIR:-/tmp}/${file_suffix}.XXXXXX")
+    fi
+
+    # For multi-platform, scan the specific architecture digest
+    local scan_target="$image"
+    if [[ -n "$arch" ]]; then
+        log_info "Generating SBOM for architecture: $arch"
+        # Try to get platform-specific digest
+        if command -v ci_get_platform_digest >/dev/null 2>&1; then
+            local platform_digest
+            platform_digest="$(ci_get_platform_digest "$image" "$arch" 2>/dev/null || echo "")"
+            if [[ -n "$platform_digest" ]]; then
+                # Use digest reference for architecture-specific scan
+                local image_base="${image%:*}"
+                image_base="${image_base%@*}"
+                scan_target="${image_base}@${platform_digest}"
+                log_info "Scanning architecture-specific digest: ${platform_digest:0:12}..."
+            fi
+        fi
+    fi
+
+    if syft "$scan_target" -o cyclonedx-json="$sbom_file" >/dev/null 2>&1; then
         echo "$sbom_file"
         return 0
     else
@@ -278,6 +304,10 @@ load_repository() {
     # Clone repository
     if git clone -b "$branch" $depth_option "$clone_url" "$dir" 2>/dev/null; then
         log_success "Repository cloned to: $dir"
+
+        # Fetch tags
+        git -C "$dir" fetch --tags --quiet 2>/dev/null
+
         return 0
     else
         log_error "Failed to clone repository: $repo"

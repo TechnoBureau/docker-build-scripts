@@ -1,101 +1,81 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ========= CONFIG =========
-INSTALL_DIR="${1:-/usr/local/bin}"
+PREFIX="${1:-/tmp/chroot/usr/local}"
+
+BIN_DIR="${PREFIX}/bin"
+AWS_INSTALL_DIR="${PREFIX}/aws-cli"
+
 TMP_DIR="$(mktemp -d)"
 AWS_CLI_ZIP="awscliv2.zip"
 
-# ========= LOGGING UTILS =========
 log_info() {
     echo -e "\033[1;34m[INFO]\033[0m $1"
 }
+
 log_error() {
     echo -e "\033[1;31m[ERROR]\033[0m $1" >&2
 }
+
 log_success() {
     echo -e "\033[1;32m[SUCCESS]\033[0m $1"
 }
 
-# ========= FUNCTION: Detect OS =========
-detect_os() {
-    local os
-    os="$(uname | tr '[:upper:]' '[:lower:]')"
-    case "$os" in
-        linux|darwin) echo "$os" ;;
-        *) log_error "Unsupported OS: $os" && exit 1 ;;
-    esac
+cleanup() {
+    rm -rf "$TMP_DIR"
 }
 
-# ========= FUNCTION: Detect ARCH =========
+trap cleanup EXIT
+
 detect_arch() {
     local arch
     arch="$(uname -m)"
+
     case "$arch" in
         x86_64) echo "x86_64" ;;
         arm64|aarch64) echo "aarch64" ;;
-        *) log_error "Unsupported architecture: $arch" && exit 1 ;;
+        *)
+            log_error "Unsupported architecture: $arch"
+            exit 1
+            ;;
     esac
 }
 
-# ========= FUNCTION: Download AWS CLI =========
-download_awscli() {
-    local os="$1"
-    local arch="$2"
-    local url
+main() {
+    local arch
+    arch="$(detect_arch)"
 
-    if [[ "$os" == "linux" ]]; then
-        url="https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip"
-    elif [[ "$os" == "darwin" ]]; then
-        url="https://awscli.amazonaws.com/AWSCLIV2.pkg"  # macOS uses .pkg installer
-    else
-        log_error "Unsupported OS for AWS CLI: $os"
-        exit 1
-    fi
+    mkdir -p "$BIN_DIR" "$AWS_INSTALL_DIR"
+
+    local url="https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip"
 
     log_info "Downloading AWS CLI from: $url"
-    curl -sSL "$url" -o "$TMP_DIR/$AWS_CLI_ZIP"
-}
+    curl -fsSL "$url" -o "$TMP_DIR/$AWS_CLI_ZIP"
 
-# ========= FUNCTION: Install AWS CLI =========
-install_awscli() {
-    local os="$1"
-    local install_dir="$2"
+    log_info "Extracting AWS CLI"
+    unzip -qq "$TMP_DIR/$AWS_CLI_ZIP" -d "$TMP_DIR"
 
-    if [[ "$os" == "linux" ]]; then
-        unzip -qq "$TMP_DIR/$AWS_CLI_ZIP" -d "$TMP_DIR"
-        sudo "$TMP_DIR/aws/install" --bin-dir "$install_dir" --install-dir /usr/local/aws-cli --update
-    elif [[ "$os" == "darwin" ]]; then
-        log_info "Installing AWS CLI on macOS using .pkg installer"
-        sudo installer -pkg "$TMP_DIR/$AWS_CLI_ZIP" -target /
-    fi
+    log_info "Installing AWS CLI into staging root: $PREFIX"
 
-    log_success "AWS CLI installed successfully"
-}
+    "$TMP_DIR/aws/install" \
+        --install-dir "$AWS_INSTALL_DIR" \
+        --bin-dir "$BIN_DIR" \
+        --update
 
-# ========= FUNCTION: Clean up =========
-cleanup() {
-    log_info "Cleaning up temporary files"
-    rm -rf "$TMP_DIR"
-    sudo rm -rf /usr/local/aws-cli/v2/*/dist/cryptography-*.dist-info/METADATA 2>/dev/null || true
-    sudo chmod +rx "$INSTALL_DIR"/aws*
-}
+    # Important:
+    # The AWS installer creates symlinks using the staging path:
+    #
+    # /tmp/chroot/usr/local/bin/aws -> /tmp/chroot/usr/local/aws-cli/...
+    #
+    # That will be broken inside the final image.
+    # Replace them with final-container-correct symlinks.
+    rm -f "$BIN_DIR/aws" "$BIN_DIR/aws_completer"
 
-# ========= MAIN =========
-main() {
-    os=$(detect_os)
-    arch=$(detect_arch)
+    ln -s "${PREFIX}/aws-cli/v2/current/bin/aws" "$BIN_DIR/aws"
+    ln -s "${PREFIX}/aws-cli/v2/current/bin/aws_completer" "$BIN_DIR/aws_completer"
 
-    log_info "Detected OS: $os"
-    log_info "Detected Architecture: $arch"
-    log_info "Installing AWS CLI to: $INSTALL_DIR"
+    log_success "AWS CLI staged successfully under: $PREFIX"
 
-    download_awscli "$os" "$arch"
-    install_awscli "$os" "$INSTALL_DIR"
-    cleanup
-
-    log_success "You can now run: aws --version"
-    aws --version
 }
 
 main
