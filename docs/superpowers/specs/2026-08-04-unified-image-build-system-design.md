@@ -36,20 +36,20 @@ docker-build-scripts/
 │       ├── ci-registry.sh       # existing (unchanged)
 │       ├── ci-sbom.sh           # existing; re-enabled from universal-ci.sh
 │       ├── ci-vuln.sh           # NEW: grype vulnerability scan + oras attach
-│       └── ci-hummingbird.sh    # NEW: Hummingbird flavor pipeline
-├── hummingbird/
-│   ├── variables.yml            # vendored: registry/labels/FIPS defaults
-│   ├── macros/                  # vendored: *.yml.j2 macros
-│   ├── templates/               # vendored: oscap-tailoring.xml.j2, grype-markdown.tmpl
-│   ├── generate_jinja2.py       # vendored
-│   ├── generate_rpms_in.py      # vendored
-│   ├── aggregate_properties.py  # vendored
-│   └── get_rpm_versions.sh      # vendored: rpm-version resolution
+│       ├── ci-hummingbird.sh    # NEW: Hummingbird flavor pipeline
+│       └── hummingbird/         # vendored hummingbird pipeline machinery
+│           ├── variables.yml            # vendored: registry/labels/FIPS defaults
+│           ├── macros/                  # vendored: *.yml.j2 macros
+│           ├── templates/               # vendored: oscap-tailoring.xml.j2, grype-markdown.tmpl
+│           ├── generate_jinja2.py       # vendored
+│           ├── generate_rpms_in.py      # vendored
+│           ├── aggregate_properties.py  # vendored
+│           └── get_rpm_versions.sh      # vendored: rpm-version resolution
 └── tools/
     └── sync-hummingbird.sh      # NEW: syncs hummingbird/ from the containers repo
 ```
 
-`hummingbird/` is fully self-contained: docker-build-scripts works standalone without the containers repo. The containers repo remains the source of truth for the vendored files.
+`build/lib/hummingbird/` is fully self-contained: docker-build-scripts works standalone without the containers repo. The containers repo remains the source of truth for the vendored files.
 
 ### docker-builds (image definitions monorepo)
 
@@ -73,13 +73,13 @@ A remote repo contains the same per-image directory layout as the monorepo (or a
 
 ## tools/sync-hummingbird.sh
 
-Developer tool; never runs during image builds. Copies the Hummingbird pipeline machinery from a local checkout of the `containers` repo into `hummingbird/`:
+Developer tool; never runs during image builds. Copies the Hummingbird pipeline machinery from a local checkout of the `containers` repo into `build/lib/hummingbird/`:
 
-- `images/variables.yml` → `hummingbird/variables.yml`
-- `macros/` → `hummingbird/macros/`
-- `templates/` → `hummingbird/templates/` (grype-markdown.tmpl, oscap-tailoring.xml.j2, TAGS.j2, VERSION.j2; readme templates are not used)
-- `ci/internal/generate_jinja2.py`, `ci/internal/generate_rpms_in.py`, `ci/internal/aggregate_properties.py` → `hummingbird/`
-- `ci/get_rpm_versions.sh` → `hummingbird/`
+- `images/variables.yml` → `build/lib/hummingbird/variables.yml`
+- `macros/` → `build/lib/hummingbird/macros/`
+- `templates/` → `build/lib/hummingbird/templates/` (grype-markdown.tmpl, oscap-tailoring.xml.j2, TAGS.j2, VERSION.j2; readme templates are not used)
+- `ci/internal/generate_jinja2.py`, `ci/internal/generate_rpms_in.py`, `ci/internal/aggregate_properties.py` → `build/lib/hummingbird/`
+- `ci/get_rpm_versions.sh` → `build/lib/hummingbird/`
 
 Usage: `tools/sync-hummingbird.sh [--from /path/to/containers]`. Default source is a sibling checkout (`../containers`). After sync, the diff is inspected and committed manually.
 
@@ -129,7 +129,7 @@ The tag set feeds the existing registry loop, so every registry receives every t
 Hummingbird generation is kept exactly as upstream: `generate_jinja2.py`
 renders one `Containerfile` per variant (default; default+builder) into the
 variant directory, alongside `oscap-tailoring.xml`, `TAGS`, and `VERSION`. No
-upstream macro changes are made; the vendored `hummingbird/` tree is a pure
+upstream macro changes are made; the vendored `build/lib/hummingbird/` tree is a pure
 copy.
 
 The Containerfile is arch-neutral: chunkah builds the rootfs for the target
@@ -195,7 +195,7 @@ Re-enabled in `main_build` for both flavors:
 
 ## Testing
 
-1. `tools/sync-hummingbird.sh` smoke: run with the containers checkout, verify generated `hummingbird/` passes `generate_jinja2.py --help`.
+1. `tools/sync-hummingbird.sh` smoke: run with the containers checkout, verify generated `build/lib/hummingbird/` passes `generate_jinja2.py --help`.
 2. ubi9 regression: `builders/curl` (existing Dockerfile path) builds with `--skip-push`; tag/label checks.
 3. Hummingbird single-variant: a builder with `properties.yml` + `Containerfile.j2` builds with `--skip-push`; version tags match `rpm-versions` output; git labels present.
 4. Hummingbird two-variant: same image with variants declared; `-builder` tags exist; default image lacks bash/dnf5, builder image has them.

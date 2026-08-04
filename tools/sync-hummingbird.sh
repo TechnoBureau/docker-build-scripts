@@ -3,8 +3,8 @@
 #
 # Purpose:
 #   Sync the Hummingbird pipeline machinery from the containers repository
-#   into the vendored hummingbird/ directory. The containers repo is the
-#   source of truth; this tool copies files verbatim (pure copy, no patches).
+#   into the vendored build/lib/hummingbird/ directory. The containers repo is
+#   the source of truth; this tool copies files verbatim (pure copy, no patches).
 #
 # Usage:
 #   tools/sync-hummingbird.sh [--from /path/to/containers]
@@ -23,7 +23,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "${SCRIPT_DIR}")"
-HB_DIR="${REPO_ROOT}/hummingbird"
+HB_DIR="${REPO_ROOT}/build/lib/hummingbird"
 
 SOURCE_DIR="${REPO_ROOT}/../containers"
 

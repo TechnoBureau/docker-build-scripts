@@ -61,17 +61,17 @@ render-time-to-runtime macro conversion).
 
 ## Phase 0 — Vendoring + sync tool
 
-Files: `tools/sync-hummingbird.sh` (new), `hummingbird/` (vendored copy)
+Files: `tools/sync-hummingbird.sh` (new), `build/lib/hummingbird/` (vendored copy)
 
 1. `tools/sync-hummingbird.sh`: copies from `--from <containers>` (default
    sibling `../containers`):
-   - `images/variables.yml` → `hummingbird/variables.yml`
-   - `macros/` → `hummingbird/macros/`
-   - `templates/{TAGS,VERSION,oscap-tailoring}.j2`, `templates/grype-markdown.tmpl` → `hummingbird/templates/`
-   - `ci/internal/{aggregate_properties,generate_jinja2,generate_rpms_in}.py` → `hummingbird/`
-   - `ci/get_rpm_versions.sh` → `hummingbird/`
+   - `images/variables.yml` → `build/lib/hummingbird/variables.yml`
+   - `macros/` → `build/lib/hummingbird/macros/`
+   - `templates/{TAGS,VERSION,oscap-tailoring}.j2`, `templates/grype-markdown.tmpl` → `build/lib/hummingbird/templates/`
+   - `ci/internal/{aggregate_properties,generate_jinja2,generate_rpms_in}.py` → `build/lib/hummingbird/`
+   - `ci/get_rpm_versions.sh` → `build/lib/hummingbird/`
 2. Pure copy (no patches, no macro adaptations).
-3. Self-check after copy: run `hummingbird/generate_jinja2.py --help` and a
+ 3. Self-check after copy: run `build/lib/hummingbird/generate_jinja2.py --help` and a
    smoke render of `templates/TAGS.j2`.
 4. Commit the vendored tree; record the source commit SHA in the commit body.
 
@@ -91,7 +91,7 @@ Functions (all prefixed `ci_hummingbird_`):
   rendered VERSION), `CONFIG[TAG_STRATEGY]="custom"`,
   `CONFIG[CUSTOM_TAGS]`, `CONFIG[PLATFORMS]` (env/flag override),
   `CONFIG[IMAGE_FORMAT]`, then registries: set `CONFIG[DF_REGISTRY_0]` /
-  `_PREFIX` / `_PUSH` from `hummingbird/variables.yml` registry + env
+  `_PREFIX` / `_PUSH` from `build/lib/hummingbird/variables.yml` registry + env
   `REGISTRY`/`IMAGE_PREFIX`, then call `build_registries_array` (ci-config.sh:86).
 - `ci_hummingbird_generate <dir>`: renders per variant (original upstream
   flow) into `<dir>/.hbgen/` (gitignored):
@@ -119,7 +119,7 @@ Functions (all prefixed `ci_hummingbird_`):
   4. on failure: log error, stop remaining variants, return non-zero
   ubi9 keeps its current single-variant path.
 
-Dependencies: `hummingbird/` scripts need python3 + PyYAML (generate_jinja2);
+Dependencies: `build/lib/hummingbird/` scripts need python3 + PyYAML (generate_jinja2);
 `get_rpm_versions.sh` needs podman + the hummingbird-builder image.
 
 ## Phase 2 — shared engine hooks
@@ -156,7 +156,7 @@ Files: `build/universal-ci.sh`, `build/lib/ci-vuln.sh` (new)
      `SBOM_SKIP`; missing tools → warn, continue)
    - `ci_generate_and_attach_vuln_report` per entry (new `ci-vuln.sh`):
      grype via `docker.io/anchore/grype:latest`, markdown report via vendored
-     `hummingbird/templates/grype-markdown.tmpl`, JSON for attach,
+     `build/lib/hummingbird/templates/grype-markdown.tmpl`, JSON for attach,
      `oras attach --artifact-type application/vnd.security.vulnerability.report+json`
      (guarded by `VULN_SKIP`; missing oras → warn, continue).
 
@@ -196,7 +196,7 @@ Files: `build/universal-ci.sh`, `build/lib/ci-vuln.sh` (new)
 
 ## Commit sequence
 
-1. docker-build-scripts: `tools/sync-hummingbird.sh` + vendored `hummingbird/`
+1. docker-build-scripts: `tools/sync-hummingbird.sh` + vendored `build/lib/hummingbird/`
 2. docker-build-scripts: `ci-core.sh` custom strategy + `ci-hummingbird.sh`
 3. docker-build-scripts: `ci-build.sh` chunkah hook + driver dispatch
 4. docker-build-scripts: `ci-vuln.sh` + SBOM re-enable

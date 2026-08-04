@@ -19,7 +19,7 @@
 #   ci_hummingbird_build <image_dir>         -> runs the full hummingbird pipeline
 #
 # Environment:
-#   HUMMINGBIRD_DIR   Override vendored hummingbird/ location (default: repo root)
+#   HUMMINGBIRD_DIR   Override vendored hummingbird/ location (default: build/lib/hummingbird)
 #
 
 # Source dependencies
@@ -29,8 +29,8 @@ if [[ -z "${CI_CORE_LOADED:-}" ]]; then
     source "${LIB_DIR}/ci-core.sh"
 fi
 
-# Vendored hummingbird machinery (defaults to <repo root>/hummingbird)
-HUMMINGBIRD_DIR="${HUMMINGBIRD_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../hummingbird" && pwd)}"
+# Vendored hummingbird machinery (defaults to build/lib/hummingbird)
+HUMMINGBIRD_DIR="${HUMMINGBIRD_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/hummingbird" && pwd)}"
 
 # =============================================================================
 # ci_hummingbird_detect_flavor
@@ -278,8 +278,10 @@ ci_hummingbird_build() {
 
         ci_hummingbird_configure "${image_dir}" "${variant}" || return 1
 
-        local vdir="${image_dir}/.hbgen/images/$(basename "${image_dir}")/hummingbird/${variant}"
-        ci_build_and_push "${vdir}/Containerfile" "${image_dir}/.hbgen/images/$(basename "${image_dir}")" || {
+        local vdir image_base
+        vdir="${image_dir}/.hbgen/images/$(basename "${image_dir}")/hummingbird/${variant}"
+        image_base="$(basename "${image_dir}")"
+        ci_build_and_push "${vdir}/Containerfile" "${image_dir}/.hbgen/images/${image_base}" || {
             log_error "Build failed for ${CONFIG[IMAGE_NAME]} (variant: ${variant})"
             return 1
         }
