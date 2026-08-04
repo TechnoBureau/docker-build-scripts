@@ -83,6 +83,12 @@ source "${LIB_DIR}/ci-vuln.sh" 2>/dev/null || true
 main_build() {
     local dockerfile="" config_yaml="" image_name="" git_repo="" branch="" flavor=""
 
+    # Backward-compatible positional image name (docker-builds build.sh convention)
+    if [[ $# -gt 0 && "$1" != -* ]]; then
+        image_name="$1"
+        shift
+    fi
+
     # Parse command-line arguments
     while [[ $# -gt 0 ]]; do
         case "$1" in

@@ -293,6 +293,7 @@ ci_hummingbird_configure() {
     CONFIG[DF_REGISTRY_0]="${registry}"
     CONFIG[DF_REGISTRY_0_PREFIX]="${prefix}"
     CONFIG[DF_REGISTRY_0_PUSH]="true"
+    [[ "${SKIP_PUSH:-false}" == "true" ]] && CONFIG[DF_REGISTRY_0_PUSH]="false"
     if command -v build_registries_array >/dev/null 2>&1; then
         build_registries_array
     fi
