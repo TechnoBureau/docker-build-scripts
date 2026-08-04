@@ -17,10 +17,8 @@ Decisions confirmed with the user:
 - Flavor is auto-detected from the files present in the image directory (no `--flavor` flag required, though an override flag exists).
 - No `build.yaml` anywhere: configuration comes from Dockerfile comments (ubi9 flavor), `properties.yml` (Hummingbird flavor), environment variables, and `build.sh` wrapper arguments.
 - Tagging is hybrid: rpm-version tags when `properties.yml` declares package-based tags, otherwise `TAG_STRATEGY`; git-tag auto-increment (semantic versioning) supported in both flavors; multiple tags per image supported.
-- Variants (default/builder) exist in the Hummingbird flavor only.
+- Variants (default/builder) exist in the Hummingbird flavor only. The original Hummingbird generation is kept: one rendered `Containerfile` per variant (no upstream macro changes). The Containerfile is arch-neutral; all architectures are supported through the engine's multi-platform flow (sequential platform builds for chunkah images).
 - The post-build stage generates and attaches an SBOM and a vulnerability report to the registry.
-- One generated Containerfile serves all variants and all architectures; variant selection happens at build time via build arguments.
-- Multi-arch builds reuse the existing `ci_build_and_push` machinery: per-arch builds, per-arch artifact save (`ci_ibmcloud_save_artifact`), and manifest/index push for all tags.
 
 ## Repository Layout
 
@@ -126,20 +124,32 @@ Overrides: `--flavor hummingbird|dockerfile` argument, or `FLAVOR` environment v
 
 The tag set feeds the existing registry loop, so every registry receives every tag.
 
-### Single Containerfile for all variants and architectures
+### Containerfile per variant, all architectures
 
-Generation produces exactly one `Containerfile` per image (arch-neutral). Variant selection is entirely build-time:
+Hummingbird generation is kept exactly as upstream: `generate_jinja2.py`
+renders one `Containerfile` per variant (default; default+builder) into the
+variant directory, alongside `oscap-tailoring.xml`, `TAGS`, and `VERSION`. No
+upstream macro changes are made; the vendored `hummingbird/` tree is a pure
+copy.
 
-- `ARG MAIN_PACKAGES="<default variant packages>"` (already exists) — builder variant passes its extended package list.
-- `ARG VARIANT=default` — used in shell conditionals:
-  - default-only: erase `grep findutils bash coreutils-single`, locale/license cleanup
-  - builder-only: write `/etc/dnf/libdnf5.conf.d/90-builder-defaults.conf`
-- `ARG VARIANT_PATH` — relative path used by `verify-compliance` and the tailoring file reference.
-- `ARG ARCHIVE_PATH=out-${VARIANT}-${TARGETARCH}.ociarchive` — unique per variant+arch to avoid collisions on the shared `/run/src` bind mount during parallel multi-arch builds; used both in the chunkah redirect and in `FROM oci-archive:${ARCHIVE_PATH}`.
-- Variant labels (`io.hummingbird-project.variant`, `variant.base`, `variant.builder`, `name=...-builder`) are passed via `--label` at build time, not baked into the file.
-- `ENV CONTAINER_DEFAULT_USER` set from an ARG default (applies to all variants).
+The Containerfile is arch-neutral: chunkah builds the rootfs for the target
+architecture inside the build (`TARGETARCH`/`--platform`). Multi-arch is
+supported by the engine's platform flow, with chunkah-specific adjustments:
 
-No per-arch Containerfiles exist: chunkah builds the rootfs for the target architecture inside the build (`TARGETARCH`/`--platform`).
+1. **Absolute `FROM oci-archive:` path**: the driver rewrites the `FROM
+   oci-archive:out.ociarchive` line in its generated copy to
+   `FROM oci-archive:<abs image-dir>/out.ociarchive`, so the import resolves
+   without `pushd` (which is not possible inside `ci_build_and_push`
+   subshells). This matches the upstream mechanism where the final stage is
+   imported after the builder stage produced the archive.
+2. **Sequential platform builds**: chunkah images build platforms sequentially
+   (`PARALLEL_PLATFORMS=false`) because the `/run/src` bind mount is shared;
+   a single `out.ociarchive` is safe when platform builds do not overlap.
+3. **Chunkah engine flags**: `--skip-unused-stages=false`,
+   `-v <context>:/run/src --security-opt=label=disable` (podman/buildah),
+   matching upstream `build_images.sh`; archive cleaned up after the build.
+4. Per-arch artifact save (`ci_ibmcloud_save_artifact`) and manifest/index
+   push for all tags reuse the existing `ci_build_and_push` machinery.
 
 ### Generation
 
@@ -158,10 +168,10 @@ Git metadata (`GIT_SHA`, `GIT_SOURCE_URL`, `GIT_BRANCH`) is fed into the generat
 
 1. For each variant declared in `properties.yml` (default; default+builder):
    - compute tags (variant suffix `-builder` appended for builder variants)
-   - set build args: `VARIANT`, `MAIN_PACKAGES`, `VARIANT_PATH`, `ARCHIVE_PATH`, labels
-2. Call `ci_build_and_push` once per variant with the generated Containerfile.
-   - docker: per-platform parallel builds (existing), per-arch artifact save via `ci_ibmcloud_save_artifact`, index push for all tags.
-   - podman: `podman manifest create` + per-`--platform` builds into `--manifest` (existing), per-arch artifact save, `podman manifest push --all` for every tag in `CI_BUILT_IMAGES`.
+   - set build args/labels from the variant's rendered output
+2. Call `ci_build_and_push` once per variant with the variant's generated Containerfile and the image dir as context.
+   - chunkah adjustments (absolute `FROM oci-archive:` path, sequential platforms, workaround flags, archive cleanup) applied via the `CONFIG[CHUNKAH]` hook.
+   - docker/podman: per-platform builds (existing), per-arch artifact save via `ci_ibmcloud_save_artifact`, manifest/index push for all tags in `CI_BUILT_IMAGES`.
 3. Built images registered in `CI_BUILT_IMAGES` so the shared push/artifact stages apply.
 
 The ubi9 flavor keeps its current single-variant behavior (no builder variant).
@@ -180,6 +190,7 @@ Re-enabled in `main_build` for both flavors:
 - Missing builder image / dnf repoquery failure → error with remedy message (existing pattern).
 - chained operations use `|| { log_error ...; return 1; }` (existing repo style).
 - Failed variant build aborts that variant; other variants are not attempted; exit code reflects failure.
+- Sequential platform builds for chunkah images are slower than parallel, but correctness wins: overlapping builds would corrupt the shared `out.ociarchive`.
 - Artifact attachment failures are warnings (registry attach must not fail the build).
 
 ## Testing
