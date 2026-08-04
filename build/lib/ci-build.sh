@@ -515,6 +515,29 @@ ci_build_and_push(){
         [[ -n "$build_arch" ]] && CI_BUILD_ARCHES=("$build_arch")
     fi
 
+    # Chunkah build hook: apply chunkah-specific flags and constraints
+    if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
+        log_info "Chunkah build detected, applying chunkah workarounds"
+        
+        # Force sequential platform builds (shared /run/src bind mount)
+        PARALLEL_PLATFORMS="false"
+        
+        # Add chunkah-specific build args
+        build_args+=("--build-arg" "ARCHIVE_PATH=out-\${TARGETARCH}.ociarchive")
+        ci_export_build_arg "ARCHIVE_PATH" "out-\${TARGETARCH}.ociarchive"
+        
+        # For podman/buildah: add bind mount for /run/src and skip-unused-stages
+        if [[ "$engine" == "podman" ]] || [[ "$engine" == "buildah" ]]; then
+            # We'll add the volume mount later in the platform build loop
+            log_debug "Chunkah: will add -v context:/run/src --security-opt=label=disable for podman/buildah"
+        fi
+        
+        # Add --skip-unused-stages=false for buildah
+        if [[ "$engine" == "buildah" ]]; then
+            build_args+=("--skip-unused-stages=false")
+        fi
+    fi
+
 
     # contexts handling - attempt to use buildx --context if supported
     ci_setup_builder_contexts
@@ -568,7 +591,11 @@ ci_build_and_push(){
                         done
 
                         # Build image
-                        $engine build "${docker_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || exit 1
+                        local chunkah_mount=()
+                        if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
+                            chunkah_mount=(-v "$context:/run/src" --security-opt=label=disable)
+                        fi
+                        $engine build "${chunkah_mount[@]}" "${docker_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || exit 1
 
                         # Push and save artifacts
                         local primary_registry=""
@@ -628,7 +655,11 @@ ci_build_and_push(){
                     done
 
                     # Build and push
-                    $engine build "${docker_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || {
+                    local chunkah_mount=()
+                    if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
+                        chunkah_mount=(-v "$context:/run/src" --security-opt=label=disable)
+                    fi
+                    $engine build "${chunkah_mount[@]}" "${docker_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || {
                         log_error "Platform build failed: $plat"
                         return 1
                     }
@@ -781,8 +812,10 @@ ci_build_and_push(){
                             --layers=true \
                             --force-rm \
                             "$context" 2>&1 | \
-                        grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)'
-                        exit ${PIPESTATUS[0]}
+                        grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || {
+                            log_error "Platform build failed: $plat"
+                            return 1
+                        }
                     ) &
                     platform_pids+=($!)
                 done
