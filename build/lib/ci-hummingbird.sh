@@ -204,6 +204,16 @@ PY
     ln -s "${HUMMINGBIRD_DIR}/get_rpm_versions.sh" "${hbgen}/ci/get_rpm_versions.sh"
 
     local hbgen_dir="${hbgen}/images/${image_name}"
+
+    # Extra build-context files (rootfs for config/scripts, src for source
+    # builds) land in the hbgen image tree, which is the build context.
+    local extra
+    for extra in rootfs src; do
+        if [[ -d "${image_dir}/${extra}" ]]; then
+            cp -R "${image_dir}/${extra}" "${hbgen_dir}"
+        fi
+    done
+
     local gen
     for gen in aggregate_properties generate_rpms_in generate_jinja2; do
         [[ -x "${HUMMINGBIRD_DIR}/${gen}.py" ]] || chmod +x "${HUMMINGBIRD_DIR}/${gen}.py"
@@ -231,18 +241,13 @@ PY
         }
     done <<< "${variants}"
 
-    # 3. Resolve RPM versions when any tag uses a package version macro
-    if python3 -c '
-import json, sys
-cache = json.load(open(sys.argv[1], encoding="utf-8"))
-tags = cache["images"][sys.argv[2]]["properties"].get("tags", [])
-sys.exit(0 if any("package_" in str(t.get("value", "")) for t in tags) else 1)
-' "${hbgen}/.cache/properties.json" "${image_name}"; then
-        ( cd "${hbgen}" && ci/get_rpm_versions.sh ) || {
-            log_error "get_rpm_versions.sh failed for ${image_name}"
-            return 1
-        }
-    fi
+    # 3. Resolve RPM versions (needed for the VERSION file and any tag using
+    # a package version macro; always resolved so latest-only images get a
+    # meaningful version)
+    ( cd "${hbgen}" && ci/get_rpm_versions.sh ) || {
+        log_error "get_rpm_versions.sh failed for ${image_name}"
+        return 1
+    }
 
     # 4. Render per variant
     while IFS= read -r variant; do
