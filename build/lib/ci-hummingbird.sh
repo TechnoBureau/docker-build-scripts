@@ -152,7 +152,50 @@ ci_hummingbird_generate() {
     # Image definition files
     cp "${image_dir}/properties.yml" "${hbgen}/images/${image_name}/properties.yml"
     cp "${image_dir}/Containerfile.j2" "${hbgen}/images/${image_name}/Containerfile.j2"
-    cp "${HUMMINGBIRD_DIR}/variables.yml" "${hbgen}/images/variables.yml"
+    # variables.yml is configuration and lives in the builders repo, not in
+    # the code repo. Base: <BUILDERS_DIR>/variables.yml (shared defaults for
+    # all builders), overridden by <image_dir>/variables.yml (per-image
+    # additional/override values). At least one of the two must exist.
+    local repo_vars=""
+    if [[ -n "${BUILDERS_DIR:-}" ]]; then
+        repo_vars="${BUILDERS_DIR}/variables.yml"
+    fi
+    local builder_vars="${image_dir}/variables.yml"
+    local vars_base=""
+    if [[ -f "${repo_vars}" ]]; then
+        vars_base="${repo_vars}"
+    elif [[ -f "${builder_vars}" ]]; then
+        vars_base="${builder_vars}"
+    else
+        log_error "No variables.yml for ${image_name}: create ${builder_vars} (per-image overrides) or ${repo_vars:-<builders>/variables.yml} (shared defaults)"
+        return 1
+    fi
+    cp "${vars_base}" "${hbgen}/images/variables.yml"
+    if [[ -f "${builder_vars}" && "${builder_vars}" != "${vars_base}" ]]; then
+        python3 - "${vars_base}" "${builder_vars}" "${hbgen}/images/variables.yml" <<'PY'
+import sys, yaml
+
+base_file, overlay_file, out_file = sys.argv[1], sys.argv[2], sys.argv[3]
+base = yaml.safe_load(open(base_file, encoding="utf-8")) or {}
+overlay = yaml.safe_load(open(overlay_file, encoding="utf-8")) or {}
+
+def merge(dst, src):
+    for key, value in src.items():
+        if isinstance(value, dict) and isinstance(dst.get(key), dict):
+            merge(dst[key], value)
+        else:
+            dst[key] = value
+    return dst
+
+with open(out_file, "w", encoding="utf-8") as f:
+    yaml.safe_dump(merge(base, overlay), f, sort_keys=False, allow_unicode=True)
+PY
+        rc=$?
+        if [[ ${rc} -ne 0 ]]; then
+            log_error "variables.yml merge failed for ${image_name}"
+            return 1
+        fi
+    fi
 
     # Vendored machinery: symlink so scripts stay pure copies
     ln -s "${HUMMINGBIRD_DIR}/macros" "${hbgen}/macros"
@@ -290,26 +333,108 @@ ci_hummingbird_configure() {
         CONFIG[CUSTOM_TAGS]="${HB_TAGS}"
     fi
 
-    # Registries: env override wins, else variables.yml registry
-    local registry="${REGISTRY:-}"
-    local prefix="${IMAGE_PREFIX:-}"
-    if [[ -z "${registry}" ]]; then
-        registry="$(grep -m1 '^registry:' "${HUMMINGBIRD_DIR}/variables.yml" | awk '{print $2}')"
-        registry="${registry//\"/}"
-        registry="${registry//\'/}"
+    # Merged variables (shared builders/variables.yml deep-merged with the
+    # per-image overrides during generate; the single variables.yml source)
+    local merged_vars="${image_dir}/.hbgen/images/variables.yml"
+    [[ -f "${merged_vars}" ]] || merged_vars="${image_dir}/variables.yml"
+
+    # Global push control: env SKIP_PUSH wins, else variables.yml skip_push
+    local skip_push="false"
+    if [[ "${SKIP_PUSH:-false}" == "true" ]]; then
+        skip_push="true"
+    else
+        skip_push="$(python3 - "${merged_vars}" <<'PY'
+import sys, yaml
+
+data = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+print("true" if data.get("skip_push") else "false")
+PY
+)"
     fi
-    CONFIG[DF_REGISTRY_0]="${registry}"
-    CONFIG[DF_REGISTRY_0_PREFIX]="${prefix}"
-    CONFIG[DF_REGISTRY_0_PUSH]="true"
-    [[ "${SKIP_PUSH:-false}" == "true" ]] && CONFIG[DF_REGISTRY_0_PUSH]="false"
+
+    # Registries (all are built/pushed; push can be disabled globally via
+    # skip_push/SKIP_PUSH or per registry via the push key):
+    #   HB_REGISTRIES   env, comma-separated (highest priority)
+    #   REGISTRY        env, single registry (legacy override)
+    #   registries:     list in variables.yml — strings ("name") or maps
+    #                   (name/prefix/push); builder file overrides project
+    #   registry:       scalar in variables.yml (fallback)
+    local registry_list="${HB_REGISTRIES:-${REGISTRY:-}}"
+    local prefix="${IMAGE_PREFIX:-}"
+    local -a reg_entries=()
+    if [[ -n "${registry_list}" ]]; then
+        local reg
+        while IFS= read -r reg; do
+            [[ -n "${reg}" ]] || continue
+            reg_entries+=("${reg}|${prefix}|")
+        done <<< "${registry_list//,/$'\n'}"
+    else
+        mapfile -t reg_entries < <(python3 - "${merged_vars}" <<'PY'
+import sys, yaml
+
+data = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+registries = data.get("registries")
+entries = []
+if isinstance(registries, list):
+    for reg in registries:
+        if isinstance(reg, dict):
+            push = reg.get("push", "")
+            if isinstance(push, bool) or push in ("true", "yes", "1"):
+                push = "true" if push else "false"
+            entries.append(f"{reg.get('name', '')}|{reg.get('prefix', '')}|{push}")
+        else:
+            entries.append(f"{str(reg)}|")
+elif isinstance(registries, str):
+    entries.append(f"{registries}|")
+elif isinstance(data.get("registry"), str):
+    entries.append(f"{data['registry']}|")
+print("\n".join(entries))
+PY
+)
+    fi
+
+    local i=0
+    local entry reg prefix2 push2
+    for entry in "${reg_entries[@]:-}"; do
+        IFS='|' read -r reg prefix2 push2 <<< "${entry}"
+        [[ -n "${reg}" ]] || continue
+        CONFIG[DF_REGISTRY_${i}]="${reg}"
+        CONFIG[DF_REGISTRY_${i}_PREFIX]="${prefix2}"
+        local reg_push="true"
+        [[ "${skip_push}" == "true" ]] && reg_push="false"
+        if [[ -n "${push2}" ]] && [[ "$(echo "${push2}" | tr '[:upper:]' '[:lower:]')" =~ ^(false|no|0)$ ]]; then
+            reg_push="false"
+        fi
+        CONFIG[DF_REGISTRY_${i}_PUSH]="${reg_push}"
+        i=$((i+1))
+    done
     if command -v build_registries_array >/dev/null 2>&1; then
         build_registries_array
     fi
 
+    # Arch/platforms: env PLATFORMS wins, else variables.yml platforms
+    # (comma-separated string or list, e.g. "linux/amd64,linux/arm64")
+    local platforms="${PLATFORMS:-}"
+    if [[ -z "${platforms}" ]]; then
+        platforms="$(python3 - "${merged_vars}" <<'PY'
+import sys, yaml
+
+data = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+platforms = data.get("platforms")
+if isinstance(platforms, list):
+    print(",".join(str(p) for p in platforms))
+elif platforms:
+    print(platforms)
+PY
+)"
+    fi
+    [[ -n "${platforms}" ]] && CONFIG[PLATFORMS]="${platforms}"
+
     # Chunkah build: engine applies the workaround flags (Phase 2 hook)
     CONFIG[CHUNKAH]="true"
 
-    log_info "Hummingbird config: image=${CONFIG[IMAGE_NAME]} version=${CONFIG[VERSION]} tags='${CONFIG[CUSTOM_TAGS]:-}' registry=${registry}"
+    local registry_summary="${registry_list:-$(IFS=,; echo "${reg_entries[*]}")}"
+    log_info "Hummingbird config: image=${CONFIG[IMAGE_NAME]} version=${CONFIG[VERSION]} tags='${CONFIG[CUSTOM_TAGS]:-}' registries=${registry_summary} platforms=${platforms:-native} skip_push=${skip_push}"
     return 0
 }
 
