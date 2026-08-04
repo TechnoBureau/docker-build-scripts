@@ -2,7 +2,7 @@
 # shellcheck disable=SC1091
 
 # Load generic libraries
-. /home/nonroot/scripts/liblog.sh
+. /tmp/scripts/liblog.sh
 
 ########################
 # Run custom initialization scripts

@@ -8,10 +8,10 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-. /home/nonroot/scripts/libfs.sh
-. /home/nonroot/scripts/libos.sh
-. /home/nonroot/scripts/liblog.sh
-. /home/nonroot/scripts/libversion.sh
+. /tmp/scripts/libfs.sh
+. /tmp/scripts/libos.sh
+. /tmp/scripts/liblog.sh
+. /tmp/scripts/libversion.sh
 
 # Functions
 

@@ -7,7 +7,7 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-. /home/nonroot/scripts/liblog.sh
+. /tmp/scripts/liblog.sh
 
 # Constants
 BOLD='\033[1m'

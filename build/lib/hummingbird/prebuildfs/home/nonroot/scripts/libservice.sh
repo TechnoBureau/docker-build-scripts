@@ -7,8 +7,8 @@
 # shellcheck disable=SC1091
 
 # Load Generic Libraries
-. /home/nonroot/scripts/libvalidations.sh
-. /home/nonroot/scripts/liblog.sh
+. /tmp/scripts/libvalidations.sh
+. /tmp/scripts/liblog.sh
 
 # Functions
 

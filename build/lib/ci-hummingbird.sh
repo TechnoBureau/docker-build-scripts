@@ -207,10 +207,14 @@ PY
 
     # Extra build-context files (rootfs for config/scripts, src for source
     # builds) land in the hbgen image tree, which is the build context.
+    # prebuildfs is the shared library set vendored alongside the machinery;
+    # it is copied only when the image builder references it.
     local extra
-    for extra in rootfs src; do
+    for extra in rootfs src prebuildfs; do
         if [[ -d "${image_dir}/${extra}" ]]; then
             cp -R "${image_dir}/${extra}" "${hbgen_dir}"
+        elif [[ "${extra}" == "prebuildfs" && -d "${HUMMINGBIRD_DIR}/prebuildfs" ]]; then
+            cp -R "${HUMMINGBIRD_DIR}/prebuildfs" "${hbgen_dir}"
         fi
     done
 

@@ -7,7 +7,7 @@
 # shellcheck disable=SC1091,SC2086
 
 # Load Generic Libraries
-. /home/nonroot/scripts/liblog.sh
+. /tmp/scripts/liblog.sh
 
 # Functions
 

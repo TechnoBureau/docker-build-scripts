@@ -7,7 +7,7 @@
 # shellcheck disable=SC1090,SC1091
 
 # Load generic libraries
-. /home/nonroot/scripts/liblog.sh
+. /tmp/scripts/liblog.sh
 
 ########################
 # Execute a command (or list of commands) with the web server environment and library loaded
@@ -23,8 +23,8 @@ web_server_execute() {
     shift
     # Run program in sub-shell to avoid web server environment getting loaded when not necessary
     (
-        . "/home/nonroot/scripts/lib${web_server}.sh"
-        . "/home/nonroot/scripts/${web_server}-env.sh"
+        . "/tmp/scripts/lib${web_server}.sh"
+        . "/tmp/scripts/${web_server}-env.sh"
         "$@"
     )
 }
@@ -42,7 +42,7 @@ web_server_list() {
     local -r -a supported_web_servers=(apache nginx)
     local -a existing_web_servers=()
     for web_server in "${supported_web_servers[@]}"; do
-        [[ -f "/home/nonroot/scripts/${web_server}-env.sh" ]] && existing_web_servers+=("$web_server")
+        [[ -f "/tmp/scripts/${web_server}-env.sh" ]] && existing_web_servers+=("$web_server")
     done
     echo "${existing_web_servers[@]:-}"
 }
@@ -84,7 +84,7 @@ web_server_validate() {
     if [[ -z "$(web_server_type)" || ! " ${supported_web_servers[*]} " == *" $(web_server_type) "* ]]; then
         print_validation_error "Could not detect any supported web servers. It must be one of: ${supported_web_servers[*]}"
     elif ! web_server_execute "$(web_server_type)" type -t "is_$(web_server_type)_running" >/dev/null; then
-        print_validation_error "Could not load the $(web_server_type) web server library from /home/nonroot/scripts. Check that it exists and is readable."
+        print_validation_error "Could not load the $(web_server_type) web server library from /tmp/scripts. Check that it exists and is readable."
     fi
 
     return "$error_code"
