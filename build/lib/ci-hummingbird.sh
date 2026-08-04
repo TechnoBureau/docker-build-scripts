@@ -273,6 +273,8 @@ ci_hummingbird_configure() {
 
     # Version + tags from the rendered files
     CONFIG[VERSION]="$(cat "${vdir}/VERSION" 2>/dev/null || echo latest)"
+    # HB_VERSION overrides the auto-detected package version
+    CONFIG[VERSION]="${HB_VERSION:-${CONFIG[VERSION]}}"
     local tags_file="${vdir}/TAGS"
     if [[ -f "${tags_file}" ]]; then
         CONFIG[TAG_STRATEGY]="custom"
@@ -280,6 +282,12 @@ ci_hummingbird_configure() {
         CONFIG[CUSTOM_TAGS]="${tag_list[*]}"
     else
         CONFIG[TAG_STRATEGY]="version-latest"
+    fi
+    # HB_TAGS overrides the auto-generated tag list (space-separated, e.g.
+    # "latest 8.21.0" or "8.21.0" to skip the moving tags)
+    if [[ -n "${HB_TAGS:-}" ]]; then
+        CONFIG[TAG_STRATEGY]="custom"
+        CONFIG[CUSTOM_TAGS]="${HB_TAGS}"
     fi
 
     # Registries: env override wins, else variables.yml registry
@@ -331,6 +339,29 @@ ci_hummingbird_build() {
     local variant
     local variants
     variants="$(ci_hummingbird_variants "${image_dir}")" || return 1
+
+    # HB_VARIANTS filters the build to the listed variants (space or comma
+    # separated), e.g. "default" to skip the builder variant or "default builder"
+    # to build both. Unknown names are rejected with the valid list.
+    if [[ -n "${HB_VARIANTS:-}" ]]; then
+        local -a all_variants selected=()
+        mapfile -t all_variants <<< "${variants}"
+        local requested v ok
+        for requested in ${HB_VARIANTS//,/ }; do
+            ok="false"
+            for v in "${all_variants[@]}"; do
+                [[ "$v" == "$requested" ]] && ok="true" && break
+            done
+            [[ "$ok" == "true" ]] || {
+                log_error "Unknown variant '${requested}' for $(basename "${image_dir}"); valid: ${all_variants[*]}"
+                return 1
+            }
+            selected+=("$requested")
+        done
+        variants="$(printf '%s\n' "${selected[@]}")"
+        log_info "Building variants (HB_VARIANTS): ${selected[*]}"
+    fi
+
     while IFS= read -r variant; do
         [[ -n "${variant}" ]] || continue
         log_info "=== Building hummingbird variant: ${variant} ==="
