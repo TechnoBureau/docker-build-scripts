@@ -14,6 +14,12 @@ ARG DNF_FLAGS="-y \
       --setopt=varsdir=${DNF_CACHE}"
 
 FROM quay.io/hummingbird-ci/hummingbird-builder:latest AS builder
+# Skip the nested mount/pid namespace: podman build already runs each RUN in
+# an ephemeral container, so unshare's atomic-cleanup benefit does not apply,
+# and unshare is blocked on some build hosts (GitHub Actions runner containers,
+# macOS podman VMs). This is the supported escape hatch built into
+# dnf-installroot; the mounts below still happen inside the build container.
+ENV _installroot_unshared=1
 ARG NEWROOT
 ARG DNF_CACHE
 ARG DNF_FLAGS

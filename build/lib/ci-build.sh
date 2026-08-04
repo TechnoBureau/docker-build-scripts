@@ -535,6 +535,14 @@ ci_build_and_push(){
         if [[ "$engine" == "podman" ]] || [[ "$engine" == "buildah" ]]; then
             # We'll add the volume mount later in the platform build loop
             log_debug "Chunkah: will add -v context:/run/src --security-opt=label=disable for podman/buildah"
+
+            # dnf-installroot mounts tmpfs on /run, /tmp, /dev inside the
+            # newroot, which requires CAP_SYS_ADMIN. Rootless podman/buildah
+            # exclude it by default; without it every RUN fails with
+            # "mount: permission denied" (or "unshare: Operation not permitted"
+            # on hosts whose seccomp blocks namespace creation, e.g. GitHub
+            # Actions runner containers).
+            build_args+=("--cap-add=SYS_ADMIN")
         fi
 
         # Force the archive-producing builder stage to run. Without this,
@@ -751,6 +759,13 @@ ci_build_and_push(){
         podman_args+=("--network=host")
 
         podman_args+=("--format" "${image_format}")
+
+        # Chunkah: bind-mount the hbgen images dir so the builder stage can
+        # read oscap-tailoring.xml and the archive-producing RUN can write
+        # out.ociarchive into the build context
+        if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
+            podman_args+=(-v "$context:/run/src" --security-opt=label=disable)
+        fi
 
 
 
