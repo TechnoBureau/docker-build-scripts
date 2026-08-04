@@ -1,7 +1,14 @@
 {%- macro setup_newroot() -%}
-{{ main_packages_arg() }}
-{{- build_packages_arg() }}
-
+FROM quay.io/hummingbird-ci/hummingbird-builder:latest AS builder
+# Skip the nested mount/pid namespace: podman build already runs each RUN in
+# an ephemeral container, so unshare's atomic-cleanup benefit does not apply,
+# and unshare is blocked on some build hosts (GitHub Actions runner containers,
+# macOS podman VMs). This is the supported escape hatch built into
+# dnf-installroot; the mounts below still happen inside the build container.
+ENV _installroot_unshared=1
+# ARG defaults must be declared inside this stage, not in global scope: a
+# template may define stages before setup_newroot() (e.g. a compiler stage),
+# and ARGs declared between FROMs only apply to the preceding stage.
 ARG NEWROOT=/new-root-fs
 ARG DNF_CACHE=/tmp/dnf-cache
 ARG DNF_FLAGS="-y \
@@ -12,26 +19,8 @@ ARG DNF_FLAGS="-y \
       --setopt=system_cachedir=${DNF_CACHE} \
       --setopt=logdir=${DNF_CACHE} \
       --setopt=varsdir=${DNF_CACHE}"
-
-FROM quay.io/hummingbird-ci/hummingbird-builder:latest AS builder
-# Skip the nested mount/pid namespace: podman build already runs each RUN in
-# an ephemeral container, so unshare's atomic-cleanup benefit does not apply,
-# and unshare is blocked on some build hosts (GitHub Actions runner containers,
-# macOS podman VMs). This is the supported escape hatch built into
-# dnf-installroot; the mounts below still happen inside the build container.
-ENV _installroot_unshared=1
-ARG NEWROOT
-ARG DNF_CACHE
-ARG DNF_FLAGS
-ARG MAIN_PACKAGES
-{%- if arch_specific_packages is defined and arch_specific_packages %}
-{%- for arch in arch_specific_packages | sort %}
-ARG ARCH_PACKAGES_{{ arch }}
-{%- endfor %}
-{%- endif %}
-{%- if rpm_packages is defined and rpm_packages['build-deps'] is defined and rpm_packages['build-deps'] %}
-ARG BUILD_PACKAGES
-{%- endif %}
+{{ main_packages_arg() }}
+{{- build_packages_arg() }}
 ARG TARGETARCH
 ARG SOURCE_DATE_EPOCH
 
