@@ -323,6 +323,11 @@ ci_hummingbird_build() {
 
     ci_hummingbird_generate "${image_dir}" || return 1
 
+    # WHY: ci_build_and_push resets CI_BUILT_IMAGES per variant, so accumulate
+    # the images of every variant here for the driver-level post-build loop
+    declare -ga HB_BUILT_IMAGES 2>/dev/null || true
+    HB_BUILT_IMAGES=()
+
     local variant
     local variants
     variants="$(ci_hummingbird_variants "${image_dir}")" || return 1
@@ -339,6 +344,7 @@ ci_hummingbird_build() {
             log_error "Build failed for ${CONFIG[IMAGE_NAME]} (variant: ${variant})"
             return 1
         }
+        HB_BUILT_IMAGES+=("${CI_BUILT_IMAGES[@]}")
         log_success "Built hummingbird variant: ${CONFIG[IMAGE_NAME]}"
     done <<< "${variants}"
 

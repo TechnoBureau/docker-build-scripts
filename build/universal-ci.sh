@@ -140,16 +140,27 @@ main_build() {
         fi
 
         # Post-build operations (SBOM, vulnerability reports, cleanup)
-        if [[ ${#CI_BUILT_IMAGES[@]} -gt 0 ]]; then
-            local img
-            for img in "${CI_BUILT_IMAGES[@]}"; do
+        # WHY: HB_BUILT_IMAGES spans all variants; dedupe by image ID so tags
+        # pointing at the same image are scanned once, not once per tag
+        if [[ ${#HB_BUILT_IMAGES[@]} -gt 0 ]]; then
+            local -a processed_ids=()
+            local img id seen
+            for img in "${HB_BUILT_IMAGES[@]}"; do
+                id="$(podman inspect --format='{{.Id}}' "$img" 2>/dev/null || echo "")"
+                [[ -n "$id" ]] || id="$img"
+                seen="false"
+                for d in "${processed_ids[@]}"; do
+                    [[ "$d" == "$id" ]] && seen="true" && break
+                done
+                [[ "$seen" == "true" ]] && continue
+                processed_ids+=("$id")
                 log_info "Post-build artifacts for image: $img"
                 ci_generate_and_attach_sbom "$img" || log_warn "SBOM generation/attachment failed for $img"
                 ci_generate_and_attach_vuln_report "$img" || log_warn "Vulnerability report generation/attachment failed for $img"
             done
             if [[ "${REMOVE_LOCAL_IMAGES:-true}" == "true" ]]; then
                 log_info "Removing local images (REMOVE_LOCAL_IMAGES=true)"
-                remove_docker_images "${CI_BUILT_IMAGES[@]}"
+                remove_docker_images "${HB_BUILT_IMAGES[@]}"
             fi
         else
             log_warn "No images were built"

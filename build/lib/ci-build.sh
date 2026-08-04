@@ -951,7 +951,6 @@ ci_build_and_push(){
                     log_info "Pushing single-arch image to registry: $img"
                     podman push --format "${image_format}" "$img" || { log_error "Failed to push $img"; return 1; }
                 done
-
             fi
         fi
     fi
@@ -1003,13 +1002,22 @@ ci_build_and_push(){
                 IFS=',' read -r primary_registry primary_prefix _ <<< "${REGISTRIES[0]}"
             fi
 
+            local -a artifact_done=()
             for img in "${CI_BUILT_IMAGES[@]}"; do
                 local is_primary="false"
                 [[ -n "$primary_registry" && "$img" == "${primary_registry}"* ]] && is_primary="true"
 
+                # WHY: Chunkah builds produce one image under many tags; saving
+                # the artifact once per tag re-collects the same metadata and
+                # rewrites the same file, so only save the primary tag
+                if [[ "${CONFIG[CHUNKAH]:-false}" == "true" && "$is_primary" == "true" && ${#artifact_done[@]} -gt 0 ]]; then
+                    continue
+                fi
+
                 local artifact_arch="${CI_BUILD_ARCHES[0]:-}"
                 log_info "Saving artifact: $img (arch: ${artifact_arch:-unknown}, primary: $is_primary)"
                 ci_ibmcloud_save_artifact "$img" "$artifact_arch" "$is_primary"
+                artifact_done+=("$img")
             done
         fi
     fi
