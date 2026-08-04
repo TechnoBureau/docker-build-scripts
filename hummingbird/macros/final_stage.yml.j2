@@ -1,0 +1,21 @@
+{%- macro final_stage() -%}
+RUN --mount=type=bind,target=/run/src,rw \
+    chunkah build --rootfs ${NEWROOT} --max-layers 32 > /run/src/out.ociarchive
+
+FROM oci-archive:out.ociarchive
+
+{%- if tags is defined %}
+
+{{ inject_source_info_labels() }}
+{{- image_metadata_labels() }}
+{% endif %}
+{%- if container_user is defined and container_user == "default" %}
+
+# ensure writable HOME and default directory for unprivileged user
+ENV HOME=/tmp
+WORKDIR /tmp
+{%- if variant == "builder" %}
+ENV CONTAINER_DEFAULT_USER={{ default_user }}
+{%- endif %}
+{%- endif -%}
+{% endmacro -%}

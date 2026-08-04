@@ -1,0 +1,10 @@
+{%- macro verify_compliance() %}
+RUN verify-compliance ${NEWROOT} /run/src/{{ distro }}/{{ variant }} \
+        /usr/share/xml/scap/ssg/content/ssg-hummingbird-ds.xml
+{%- for profile in oscap.active_profiles %} \
+        --{{ profile }}
+{%- endfor %}
+{%- if oscap.has_tailoring %} \
+        --tailoring-file /run/src/{{ distro }}/{{ variant }}/oscap-tailoring.xml
+{%- endif %}
+{% endmacro -%}

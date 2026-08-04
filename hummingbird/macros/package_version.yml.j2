@@ -1,0 +1,28 @@
+{%- macro package_version(package_name) -%}
+    {%- if build_from_source == True
+        and gitmodules[package_name] is defined
+        and gitmodules[package_name].label is defined -%}
+        {{ gitmodules[package_name].label }}
+    {%- elif rpm_versions[package_name] is defined -%}
+        {{ rpm_versions[package_name].rsplit('-', 1)[0] }}
+    {%- else -%}
+        unknown
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro package_major_version(package_name) -%}
+    {{ package_version(package_name).split('.')[0] }}
+{%- endmacro -%}
+
+{%- macro package_major_minor_version(package_name) -%}
+    {{ package_version(package_name).split('.')[:2]|join('.') }}
+{%- endmacro -%}
+
+{%- macro git_submodule_hash(package_name) -%}
+    {%- if gitmodules[package_name] is defined
+        and gitmodules[package_name].hash is defined -%}
+        {{ gitmodules[package_name].hash }}
+    {%- else -%}
+        unknown
+    {%- endif -%}
+{%- endmacro -%}

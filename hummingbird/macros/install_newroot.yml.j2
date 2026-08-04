@@ -1,0 +1,18 @@
+{%- macro install_newroot() -%}
+RUN test -n "${MAIN_PACKAGES}" || (echo ">>>>> MAIN_PACKAGES not set <<<<<" && false)
+
+RUN dnf-installroot ${NEWROOT} ${DNF_FLAGS} install ${MAIN_PACKAGES}
+{%- if arch_specific_packages is defined and arch_specific_packages %}
+
+# Install arch-specific packages based on TARGETARCH
+RUN case "${TARGETARCH}" in \
+{%- for arch, pkgs in arch_specific_packages | dictsort %}
+    {{ arch | replace("x86_64", "amd64") | replace("aarch64", "arm64") }}) \
+        dnf-installroot ${NEWROOT} ${DNF_FLAGS} install {{ pkgs | join(' ') }} ;; \
+{%- endfor %}
+    esac
+{%- endif %}
+{%- if oscap.enabled | default(false) and distro == "hummingbird" and image_name != "hummingbird-builder" %}
+{{ verify_compliance() }}
+{%- endif %}
+{% endmacro -%}

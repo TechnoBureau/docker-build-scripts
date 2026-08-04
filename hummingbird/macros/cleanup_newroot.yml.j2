@@ -1,0 +1,24 @@
+{%- macro cleanup_newroot(keep_licenses=false) -%}
+{%- if is_builder_variant() == "false" %}
+# This needs to be in the non 'builder' section. In case 'builder' packages are removed here.
+{% if remove_rpms_from_newroot is defined -%}
+RUN rpm --root ${NEWROOT} -e {{ remove_rpms_from_newroot }} --nodeps
+{% endif -%}
+{% if not keep_licenses -%}
+RUN rm -rf \
+      ${NEWROOT}/usr/share/licenses \
+      ${NEWROOT}/usr/share/locale
+{% endif -%}
+{% endif %}
+# Turn off journaling for reproducibility; see https://github.com/rpm-software-management/rpm/issues/2219.
+# We do this once we've done all rpm-related things.
+RUN sqlite3 ${NEWROOT}/usr/lib/sysimage/rpm/rpmdb.sqlite "PRAGMA journal_mode = DELETE;"
+RUN sqlite3 ${NEWROOT}/usr/lib/sysimage/libdnf5/transaction_history.sqlite "PRAGMA journal_mode = DELETE;"
+# Drop any cache; source of irreproducibility.
+# Also, some of our containers ship systemd for now, which creates a unique machine ID; nuke that.
+# Also remove the backup shadow files; it doesn't add value in an image.
+RUN rm -rf \
+      ${NEWROOT}/var/cache/* \
+      ${NEWROOT}/etc/machine-id \
+      ${NEWROOT}/etc/{group,gshadow,passwd,shadow}-
+{% endmacro -%}

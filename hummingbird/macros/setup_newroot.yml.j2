@@ -1,0 +1,61 @@
+{%- macro setup_newroot() -%}
+{{ main_packages_arg() }}
+{{- build_packages_arg() }}
+
+ARG NEWROOT=/new-root-fs
+ARG DNF_CACHE=/tmp/dnf-cache
+ARG DNF_FLAGS="-y \
+      --use-host-config \
+      --nodocs \
+      --setopt=install_weak_deps=False \
+      --setopt=cachedir=${DNF_CACHE} \
+      --setopt=system_cachedir=${DNF_CACHE} \
+      --setopt=logdir=${DNF_CACHE} \
+      --setopt=varsdir=${DNF_CACHE}"
+
+FROM quay.io/hummingbird-ci/hummingbird-builder:latest AS builder
+ARG NEWROOT
+ARG DNF_CACHE
+ARG DNF_FLAGS
+ARG MAIN_PACKAGES
+{%- if arch_specific_packages is defined and arch_specific_packages %}
+{%- for arch in arch_specific_packages | sort %}
+ARG ARCH_PACKAGES_{{ arch }}
+{%- endfor %}
+{%- endif %}
+{%- if rpm_packages is defined and rpm_packages['build-deps'] is defined and rpm_packages['build-deps'] %}
+ARG BUILD_PACKAGES
+{%- endif %}
+ARG TARGETARCH
+ARG SOURCE_DATE_EPOCH
+
+{%- if image_name == "hummingbird-builder" %}
+# When building the builder image itself, copy the builder scripts first
+# so they're available for the steps below
+COPY dnf-installroot.sh /usr/local/bin/dnf-installroot
+COPY download-locked-packages.sh /usr/local/bin/download-locked-packages
+COPY inject-source-info.sh /usr/local/bin/inject-source-info
+COPY verify-compliance.sh /usr/local/bin/verify-compliance
+{%- endif %}
+
+RUN mkdir -p ${NEWROOT} ${DNF_CACHE}
+
+{%- if is_builder_variant() == "true" %}
+# Configure DNF to disable weak dependencies and documentation in builder images
+RUN mkdir -p ${NEWROOT}/etc/dnf/libdnf5.conf.d && \
+    echo -e '[main]\ninstall_weak_deps=False\ntsflags=nodocs' > ${NEWROOT}/etc/dnf/libdnf5.conf.d/90-builder-defaults.conf
+{%- endif %}
+
+{%- if rpm_packages is defined and rpm_packages['build-deps'] is defined and rpm_packages['build-deps'] %}
+# Install build dependencies in the builder layer
+RUN dnf install -y ${BUILD_PACKAGES}
+{%- endif %}
+
+# Import Hummingbird GPG key into the newroot for package verification
+RUN rpmkeys --import /etc/pki/rpm-gpg/RPM-GPG-KEY-hummingbird-release --root "${NEWROOT}"
+
+# Install filesystem early, so that early container setup works
+# It gets pulled in later by glibc anyway, so no additional dependency
+RUN dnf-installroot ${NEWROOT} ${DNF_FLAGS} install filesystem
+
+{% endmacro -%}

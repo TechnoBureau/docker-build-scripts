@@ -1,0 +1,6 @@
+{%- macro set_user() -%}
+{%- if container_user is defined %}
+
+USER {{ default_user if container_user == "default" else container_user }}
+{%- endif -%}
+{% endmacro -%}

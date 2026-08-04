@@ -1,0 +1,18 @@
+{%- if oscap.enabled | default(false) and oscap.has_tailoring | default(false) -%}
+<?xml version="1.0" encoding="UTF-8"?>
+<xccdf-1.2:Tailoring xmlns:xccdf-1.2="http://checklists.nist.gov/xccdf/1.2" id="xccdf_hummingbird_tailoring_container-build">
+  <xccdf-1.2:benchmark href="ssg-hummingbird-ds.xml"/>
+  {#- Frozen timestamp for reproducible builds — not a creation date #}
+  <xccdf-1.2:version time="2026-01-01T00:00:00">1</xccdf-1.2:version>
+{%- for profile_name in oscap.active_profiles %}
+  <xccdf-1.2:Profile id="xccdf_hummingbird_profile_{{ profile_name }}_container_build" extends="xccdf_org.ssgproject.content_profile_{{ profile_name }}">
+    <xccdf-1.2:title>{{ profile_name | upper }} (container build)</xccdf-1.2:title>
+{%- for rule in oscap.profile_exclude_rules[profile_name] %}
+    <xccdf-1.2:select idref="{{ rule.id }}" selected="false">
+      <xccdf-1.2:remark>{{ rule.reason }}</xccdf-1.2:remark>
+    </xccdf-1.2:select>
+{%- endfor %}
+  </xccdf-1.2:Profile>
+{%- endfor %}
+</xccdf-1.2:Tailoring>
+{%- endif -%}

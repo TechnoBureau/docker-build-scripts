@@ -1,0 +1,7 @@
+{%- macro is_builder_variant() -%}
+{%- if image_name == "hummingbird-builder" or variant == "builder" -%}
+true
+{%- else -%}
+false
+{%- endif -%}
+{%- endmacro -%}

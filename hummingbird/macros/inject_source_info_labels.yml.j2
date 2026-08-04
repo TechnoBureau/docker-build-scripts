@@ -1,0 +1,12 @@
+{#- Add the standard name/cpe labels for released images. These are used by
+scanners. See the inject-source-info script (which injects this same
+information in the rootfs) for more details. Name and cpe are emitted
+separately so Rawhide/CI images get name but not cpe. -#}
+{%- macro inject_source_info_labels() -%}
+{%- if canonical_name %}
+LABEL name="{{ canonical_name }}"
+{%- endif %}
+{%- if cpe %}
+LABEL cpe="{{ cpe }}"
+{%- endif %}
+{%- endmacro -%}

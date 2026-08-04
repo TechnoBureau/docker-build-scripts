@@ -1,0 +1,40 @@
+{%- macro main_packages_arg() -%}
+{%- set main_packages = [] -%}
+{#- Collect string-only packages for all variants -#}
+{%- if rpm_packages is defined and rpm_packages.all is defined and rpm_packages.all -%}
+{%- set main_packages = main_packages + rpm_packages.all | select("string") | list -%}
+{%- endif -%}
+{#- Add default packages shared by every variant (e.g. FIPS packages) -#}
+{%- if default_rpm_packages is defined and default_rpm_packages.all is defined and default_rpm_packages.all -%}
+{%- set main_packages = main_packages + default_rpm_packages.all -%}
+{%- endif -%}
+{#- Add builder default packages for builder variants -#}
+{%- if is_builder_variant() == "true" and default_rpm_packages is defined and default_rpm_packages.builder is defined and default_rpm_packages.builder -%}
+{%- set main_packages = main_packages + default_rpm_packages.builder -%}
+{%- endif -%}
+{#- Add distro-level packages (distro key) -#}
+{%- if rpm_packages is defined and rpm_packages[distro] is defined and rpm_packages[distro] -%}
+{%- set main_packages = main_packages + rpm_packages[distro] | select("string") | list -%}
+{%- endif -%}
+{#- Add distro-specific packages (distro/variant key) -#}
+{%- set distro_variant_key = distro ~ "/" ~ variant -%}
+{%- if rpm_packages is defined and rpm_packages[distro_variant_key] is defined and rpm_packages[distro_variant_key] -%}
+{%- set main_packages = main_packages + rpm_packages[distro_variant_key] | select("string") | list -%}
+{%- endif -%}
+{#- Add current variant packages dynamically (variant key) -#}
+{%- if rpm_packages is defined and rpm_packages[variant] is defined and rpm_packages[variant] -%}
+{%- set main_packages = main_packages + rpm_packages[variant] | select("string") | list -%}
+{%- endif -%}
+ARG MAIN_PACKAGES="{{ main_packages | join(' ') }}"
+{%- if arch_specific_packages is defined and arch_specific_packages -%}
+{%- for arch, pkgs in arch_specific_packages | dictsort %}
+ARG ARCH_PACKAGES_{{ arch }}="{{ pkgs | join(' ') }}"
+{%- endfor -%}
+{%- endif -%}
+{%- endmacro -%}
+
+{%- macro build_packages_arg() -%}
+{%- if rpm_packages is defined and rpm_packages['build-deps'] is defined and rpm_packages['build-deps'] %}
+ARG BUILD_PACKAGES="{{ rpm_packages['build-deps'] | select('string') | list | join(' ') }}"
+{%- endif -%}
+{%- endmacro -%}

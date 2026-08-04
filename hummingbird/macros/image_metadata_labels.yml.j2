@@ -1,0 +1,5 @@
+{%- macro image_metadata_labels() -%}
+{%- for key, value in inject_labels.items() %}
+LABEL {{ key }}="{{ value }}"
+{%- endfor %}
+{%- endmacro -%}
