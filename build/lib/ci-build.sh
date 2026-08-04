@@ -536,9 +536,12 @@ ci_build_and_push(){
             # We'll add the volume mount later in the platform build loop
             log_debug "Chunkah: will add -v context:/run/src --security-opt=label=disable for podman/buildah"
         fi
-        
-        # Add --skip-unused-stages=false for buildah
-        if [[ "$engine" == "buildah" ]]; then
+
+        # Force the archive-producing builder stage to run. Without this,
+        # podman/buildah skip the stage (the final stage only references the
+        # oci-archive, whose dependency on the builder stage is invisible) and
+        # the build fails with "archive file not found".
+        if [[ "$engine" == "podman" ]] || [[ "$engine" == "buildah" ]]; then
             build_args+=("--skip-unused-stages=false")
         fi
     fi
@@ -769,6 +772,12 @@ ci_build_and_push(){
                 log_warn "BUILD_JOBS capped at 4 for stability"
             fi
 
+            # Chunkah builds cannot use --jobs: parallel layer builds make
+            # podman resolve every FROM image upfront, including the not-yet-
+            # created oci-archive, failing with "archive file not found"
+            local -a jobs_arg=("--jobs=${build_jobs}")
+            [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]] && jobs_arg=()
+
             log_info "Using ${build_jobs} parallel jobs for layer builds (CPUs: ${cpu_count})"
 
             # WHY: Remove --tag and --platform from manifest_args:
@@ -813,7 +822,7 @@ ci_build_and_push(){
                         podman build "${manifest_args[@]}" \
                             --platform "$plat" \
                             --manifest "$manifest" \
-                            --jobs="${build_jobs}" \
+                            "${jobs_arg[@]}" \
                             --layers=true \
                             --force-rm \
                             "$context" 2>&1 | \
@@ -833,7 +842,7 @@ ci_build_and_push(){
                     podman build "${manifest_args[@]}" \
                         --platform "$plat" \
                         --manifest "$manifest" \
-                        --jobs="${build_jobs}" \
+                        "${jobs_arg[@]}" \
                         --layers=true \
                         --force-rm \
                         "$context" 2>&1 | \
@@ -904,13 +913,19 @@ ci_build_and_push(){
                 log_warn "BUILD_JOBS capped at 4 for stability"
             fi
 
+            # Chunkah builds cannot use --jobs: parallel layer builds make
+            # podman resolve every FROM image upfront, including the not-yet-
+            # created oci-archive, failing with "archive file not found"
+            local -a jobs_arg=("--jobs=${build_jobs}")
+            [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]] && jobs_arg=()
+
             log_info "Using ${build_jobs} parallel jobs for layer builds (CPUs: ${cpu_count})"
 
             # WHY: Build single-arch output into a manifest/index too so push flow matches
             # multi-arch behavior and can carry manifest-level attestation metadata.
 
             podman build "${podman_args[@]}" \
-                --jobs="${build_jobs}" \
+                "${jobs_arg[@]}" \
                 --layers=true \
                 --force-rm \
                 "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || return 1
