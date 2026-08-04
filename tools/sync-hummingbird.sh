@@ -95,5 +95,8 @@ done
 # podman and the hummingbird-builder image)
 copy_file "${SOURCE_DIR}/ci/get_rpm_versions.sh" "${HB_DIR}/get_rpm_versions.sh"
 
+# Repository files referenced by rpms.in.yaml (contentOrigin.repofiles)
+copy_file "${SOURCE_DIR}/yum-repos/hummingbird.repo" "${HB_DIR}/yum-repos/hummingbird.repo"
+
 echo
 echo "Sync complete: ${SOURCE_DIR} → ${HB_DIR}"
