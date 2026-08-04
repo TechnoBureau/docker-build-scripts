@@ -220,6 +220,41 @@ ci_generate_tag(){
                 echo "$primary $secondary"
             fi
             ;;
+        tag)
+            if [[ -n "$GIT_TAG_VAL" ]]; then
+                echo "$GIT_TAG_VAL"
+            else
+                echo "latest"
+            fi
+            ;;
+        tag-latest)
+            if [[ -n "$GIT_TAG_VAL" && "$GIT_TAG_VAL" != "latest" ]]; then
+                echo "$GIT_TAG_VAL latest"
+            else
+                echo "latest"
+            fi
+            ;;
+        version-runner-latest)
+            if [[ "$V" == "latest" ]]; then
+                echo "latest"
+            else
+                primary="${V}.${R}"
+                secondary="latest"
+                echo "$primary $secondary"
+            fi
+            ;;
+        version-sha-latest)
+            if [[ "$V" == "latest" ]]; then
+                echo "latest"
+            else
+                primary="${V}.${H}"
+                secondary="latest"
+                echo "$primary $secondary"
+            fi
+            ;;
+        custom)
+            echo "${CONFIG[CUSTOM_TAGS]:-latest}"
+            ;;
         *)
             # If unknown, provide reasonable defaults preserving previous behaviour
             echo "latest"
