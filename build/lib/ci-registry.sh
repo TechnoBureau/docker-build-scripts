@@ -505,8 +505,8 @@ ci_prepull_from_images() {
             local image_ref
             image_ref=$(echo "$from_clause" | awk '{print $1}')
 
-            # Skip scratch and build stage references
-            [[ "$image_ref" =~ ^(scratch|[a-z][a-z0-9_-]*)$ ]] && continue
+            # Skip scratch, build stage references, and oci-archive imports
+            [[ "$image_ref" =~ ^(scratch|[a-z][a-z0-9_-]*|oci-archive:.*)$ ]] && continue
 
             log_info "Pre-pulling: $image_ref"
             if [[ "$engine" == "docker" ]]; then
@@ -527,8 +527,9 @@ ci_prepull_from_images() {
         fi
     done < "$dockerfile"
 
-    # Return pulled images as space-separated string
-    printf '%s\n' "${pulled_images[@]}"
+    # Collect into a global array instead of stdout so log lines do not
+    # pollute the image list when captured via command substitution
+    PREPULLED_IMAGES+=("${pulled_images[@]}")
 }
 
 # =============================================================================

@@ -468,9 +468,14 @@ ci_build_and_push(){
     # Login to all registries (FROM registries first, then push registries)
     ci_login_all_registries
 
-    # Pre-pull FROM images to handle ICR namespace-level credentials
-    local -a pulled_images=()
-    mapfile -t pulled_images < <(ci_prepull_from_images "$dockerfile" "$engine")
+    # Pre-pull FROM images to handle ICR namespace-level credentials.
+    # Skipped for chunkah builds: the FROM images are public and podman pulls
+    # them on demand, keeping the local cache warm between variants/rebuilds.
+    PREPULLED_IMAGES=()
+    if [[ "${CONFIG[CHUNKAH]:-false}" != "true" ]]; then
+        ci_prepull_from_images "$dockerfile" "$engine"
+    fi
+    local -a pulled_images=("${PREPULLED_IMAGES[@]}")
 
     for reg_entry in "${REGISTRIES[@]:-}"; do
         IFS=',' read -r reg pref push <<< "$reg_entry"
