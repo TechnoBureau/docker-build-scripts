@@ -60,6 +60,10 @@ source "${LIB_DIR}/ci-artifacts.sh" 2>/dev/null || true
 source "${LIB_DIR}/ci-utils.sh" 2>/dev/null || true
 # shellcheck source=/dev/null
 source "${LIB_DIR}/ci-sbom.sh" 2>/dev/null || true
+# shellcheck source=/dev/null
+source "${LIB_DIR}/ci-hummingbird.sh" 2>/dev/null || true
+# shellcheck source=/dev/null
+source "${LIB_DIR}/ci-vuln.sh" 2>/dev/null || true
 
 # =============================================================================
 # main_build
@@ -77,7 +81,7 @@ source "${LIB_DIR}/ci-sbom.sh" 2>/dev/null || true
 #   Single function to execute complete CI pipeline
 # =============================================================================
 main_build() {
-    local dockerfile="" config_yaml="" image_name="" git_repo="" branch=""
+    local dockerfile="" config_yaml="" image_name="" git_repo="" branch="" flavor=""
 
     # Parse command-line arguments
     while [[ $# -gt 0 ]]; do
@@ -87,6 +91,7 @@ main_build() {
             -i|--image) image_name="$2"; shift 2 ;;
             -r|--repo) git_repo="$2"; shift 2 ;;
             -b|--branch) branch="$2"; shift 2 ;;
+            -f|--flavor) flavor="$2"; shift 2 ;;
             *) log_error "Unknown argument: $1"; return 1 ;;
         esac
     done
@@ -98,6 +103,54 @@ main_build() {
             log_error "Failed to load repository"
             return 1
         }
+    fi
+
+    # Resolve the image directory (used for flavor detection and context)
+    local image_dir=""
+    if [[ -n "$image_name" ]]; then
+        image_dir=$(ci_hummingbird_find_image "$image_name" || true)
+    elif [[ -n "${SOURCE_DIR:-}" ]]; then
+        image_dir="$SOURCE_DIR"
+    fi
+
+    # Detect flavor: FLAVOR env / --flavor override wins over auto-detection
+    flavor="${flavor:-${FLAVOR:-}}"
+    if [[ -z "$flavor" && -n "$image_dir" ]]; then
+        flavor="$(ci_hummingbird_detect_flavor "$image_dir")"
+    fi
+    log_info "Detected flavor: ${flavor:-none}"
+
+    if [[ "$flavor" == "hummingbird" ]]; then
+        log_info "Loading configuration (hummingbird properties.yml)..."
+        log_info "Extracting Git information..."
+        [[ -d "${SOURCE_DIR:-}/.git" ]] && extract_git_info "$SOURCE_DIR"
+
+        ci_hummingbird_build "$image_dir"
+        local build_status=$?
+        if [[ $build_status -ne 0 ]]; then
+            log_error "Hummingbird build failed with status $build_status"
+            export exit_code="$build_status"
+            return $build_status
+        fi
+
+        # Post-build operations (SBOM, vulnerability reports, cleanup)
+        if [[ ${#CI_BUILT_IMAGES[@]} -gt 0 ]]; then
+            local img
+            for img in "${CI_BUILT_IMAGES[@]}"; do
+                log_info "Post-build artifacts for image: $img"
+                ci_generate_and_attach_sbom "$img" || log_warn "SBOM generation/attachment failed for $img"
+                ci_generate_and_attach_vuln_report "$img" || log_warn "Vulnerability report generation/attachment failed for $img"
+            done
+            if [[ "${REMOVE_LOCAL_IMAGES:-true}" == "true" ]]; then
+                log_info "Removing local images (REMOVE_LOCAL_IMAGES=true)"
+                remove_docker_images "${CI_BUILT_IMAGES[@]}"
+            fi
+        else
+            log_warn "No images were built"
+        fi
+
+        log_success "Build pipeline completed successfully"
+        return 0
     fi
 
     # Find Dockerfile if not specified
@@ -214,23 +267,18 @@ main_build() {
         return $build_status
     fi
 
-    # Post-build operations (SBOM, signing, cleanup)
+    # Post-build operations (SBOM, vulnerability reports, cleanup)
     if [[ ${#CI_BUILT_IMAGES[@]} -gt 0 ]]; then
         local primary_img="${CI_BUILT_IMAGES[0]}"
         log_info "Primary image: $primary_img"
 
-        # Generate SBOM
-        # local sbom_file
-        # sbom_file=$(generate_sbom "$primary_img")
-        # if [[ -n "$sbom_file" && -f "$sbom_file" ]]; then
-        #     log_info "SBOM: $sbom_file"
-        #     ci_collect_sbom_evidence "$sbom_file" "$primary_img"
-        # elif [[ -n "$sbom_file" ]]; then
-        #     log_warn "SBOM generation reported file '$sbom_file' but it was not found on disk"
-        # else
-        #     log_warn "SBOM generation failed"
-        # fi
-
+        # Generate and attach SBOM + vulnerability report for every built image
+        local img
+        for img in "${CI_BUILT_IMAGES[@]}"; do
+            log_info "Post-build artifacts for image: $img"
+            ci_generate_and_attach_sbom "$img" || log_warn "SBOM generation/attachment failed for $img"
+            ci_generate_and_attach_vuln_report "$img" || log_warn "Vulnerability report generation/attachment failed for $img"
+        done
 
         # Sign image
         #sign_with_cosign "$primary_img"

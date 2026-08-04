@@ -982,6 +982,12 @@ ci_build_and_push(){
     # Cleanup pre-pulled FROM images
     ci_cleanup_pulled_images "$engine" "${pulled_images[@]}"
 
+    # Cleanup chunkah rootfs archives (ARCHIVE_PATH in the build context)
+    if [[ "${CONFIG[CHUNKAH]:-false}" == "true" && -d "$context" ]]; then
+        rm -f "$context"/out-*.ociarchive 2>/dev/null || true
+        log_info "Cleaned up chunkah rootfs archives from ${context}"
+    fi
+
     CI_LAST_BUILT_IMAGES=("${CI_BUILT_IMAGES[@]}")
     log_success "Built images: ${#CI_BUILT_IMAGES[@]}"
     return 0

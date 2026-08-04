@@ -54,6 +54,53 @@ ci_hummingbird_detect_flavor() {
 }
 
 # =============================================================================
+# ci_hummingbird_find_image
+# Purpose:
+#   Resolve the hummingbird image directory (Containerfile.j2 + properties.yml)
+#   in standard locations with priority order (mirrors find_dockerfile)
+# Input:
+#   $1 - optional image name (used for pattern matching)
+# Output:
+#   Prints path to image directory
+# Returns:
+#   0 if found, 1 if not found
+# =============================================================================
+ci_hummingbird_find_image() {
+    local name="${1:-}"
+
+    search_dir() {
+        local d="$1"
+        [[ -d "$d" ]] || return 1
+        if [[ -f "$d/Containerfile.j2" && -f "$d/properties.yml" ]]; then
+            echo "$d"
+            return 0
+        fi
+        return 1
+    }
+
+    # Priority 1: BUILDERS_DIR/<name>
+    if [[ -n "$BUILDERS_DIR" && -n "$name" ]]; then
+        search_dir "$BUILDERS_DIR/$name" && return 0
+    fi
+
+    # Priority 2: SOURCE_DIR
+    if [[ -n "$SOURCE_DIR" ]]; then
+        search_dir "$SOURCE_DIR" && return 0
+    fi
+
+    # Priority 3: any image dir under BUILDERS_DIR
+    if [[ -n "$BUILDERS_DIR" && -n "$name" ]]; then
+        local d
+        for d in "$BUILDERS_DIR"/*; do
+            [[ "$(basename "$d")" == "$name" ]] || continue
+            search_dir "$d" && return 0
+        done
+    fi
+
+    return 1
+}
+
+# =============================================================================
 # ci_hummingbird_variants
 # Purpose:
 #   Resolve the variant list for an image from its properties.json cache
@@ -125,20 +172,7 @@ ci_hummingbird_generate() {
         return 1
     }
 
-    # 2. Resolve RPM versions when any tag uses a package version macro
-    if python3 -c '
-import json, sys
-cache = json.load(open(sys.argv[1], encoding="utf-8"))
-tags = cache["images"][sys.argv[2]]["properties"].get("tags", [])
-sys.exit(0 if any("package_" in str(t.get("value", "")) for t in tags) else 1)
-' "${hbgen}/.cache/properties.json" "${image_name}"; then
-        ( cd "${hbgen}" && ci/get_rpm_versions.sh ) || {
-            log_error "get_rpm_versions.sh failed for ${image_name}"
-            return 1
-        }
-    fi
-
-    # 3. Render per variant
+    # 2. Generate rpms.in.yaml per variant (get_rpm_versions.sh needs these)
     local variant
     local variants
     variants="$(ci_hummingbird_variants "${image_dir}")" || return 1
@@ -152,6 +186,25 @@ sys.exit(0 if any("package_" in str(t.get("value", "")) for t in tags) else 1)
             log_error "generate_rpms_in.py failed for ${image_name}/${variant}"
             return 1
         }
+    done <<< "${variants}"
+
+    # 3. Resolve RPM versions when any tag uses a package version macro
+    if python3 -c '
+import json, sys
+cache = json.load(open(sys.argv[1], encoding="utf-8"))
+tags = cache["images"][sys.argv[2]]["properties"].get("tags", [])
+sys.exit(0 if any("package_" in str(t.get("value", "")) for t in tags) else 1)
+' "${hbgen}/.cache/properties.json" "${image_name}"; then
+        ( cd "${hbgen}" && ci/get_rpm_versions.sh ) || {
+            log_error "get_rpm_versions.sh failed for ${image_name}"
+            return 1
+        }
+    fi
+
+    # 4. Render per variant
+    while IFS= read -r variant; do
+        [[ -n "${variant}" ]] || continue
+        local vdir="${hbgen_dir}/hummingbird/${variant}"
 
         local template
         local rendered
@@ -168,7 +221,7 @@ sys.exit(0 if any("package_" in str(t.get("value", "")) for t in tags) else 1)
             }
         done
 
-        # 4. Render the Containerfile
+        # 5. Render the Containerfile
         ( cd "${hbgen}" && python3 "${HUMMINGBIRD_DIR}/generate_jinja2.py" \
             "images/${image_name}/Containerfile.j2" \
             "images/${image_name}/hummingbird/${variant}/Containerfile" ) || {
@@ -176,7 +229,7 @@ sys.exit(0 if any("package_" in str(t.get("value", "")) for t in tags) else 1)
             return 1
         }
 
-        # 5. Rewrite FROM oci-archive to an absolute path inside the work tree
+        # 6. Rewrite FROM oci-archive to an absolute path inside the work tree
         #    (ci_build_and_push cannot pushd; buildah resolves the archive
         #    relative to CWD). chunkah writes /run/src/out.ociarchive which is
         #    the build context (= hbgen_dir) via the bind mount.
