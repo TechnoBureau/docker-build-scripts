@@ -162,15 +162,28 @@ Files: `build/universal-ci.sh`, `build/lib/ci-vuln.sh` (new)
 
 ## Phase 4 — example image + tests
 
-1. `docker-builds/builders/curl/`: hummingbird definition (`Containerfile.j2`
-   adapted from containers `images/curl/`, `properties.yml` with the same
-   `tags:` block, `rpms.in.yaml` optional) next to the existing Dockerfile
-   build; `build.sh` passes through to the driver.
-2. Tests (from the spec's Testing section):
-   - sync idempotency (Phase 0)
-   - ubi9 regression: `builders/curl` `--skip-push`
-   - hummingbird single + two-variant, multi-arch (`--platforms
-     linux/amd64,linux/arm64`), remote-repo clone, SBOM/vuln attach
+1. `docker-builds/builders/curl/`: converted to the hummingbird definition
+   (`Containerfile.j2` + `properties.yml` copied verbatim from containers
+   `images/curl/`); `build.sh` passes through to the driver. The ubi9 curl
+   Dockerfile was removed; ubi9 regression uses `builders/ubi9`.
+2. `docker-builds/scripts/` submodule bumped to the driver commit containing
+   the hummingbird pipeline; all builder `build.sh` files updated to the
+   `main_build -i <image>` convention (positional image name still accepted).
+3. Tests executed:
+   - sync idempotency (Phase 0) — `tools/sync-hummingbird.sh` run twice,
+     identical output
+   - flavor dispatch: hummingbird (`builders/curl`) and dockerfile
+     (`builders/ubi9`) both route correctly through `main_build`
+   - generation: both variants render, RPM-version tags (`latest`, `8`,
+     `8.21`, `8.21.0`; `-builder` suffix), `VERSION`, absolute `FROM
+     oci-archive:` rewrite
+   - `SKIP_PUSH=true` disables registry push; engine chunkah flags applied
+     (`--skip-unused-stages=false`, `-v <context>:/run/src`)
+4. Not runnable on macOS: the podman VM blocks `unshare -m -p`
+   ("Operation not permitted"), which `dnf-installroot` requires. Full image
+   builds and multi-arch runs must execute on Linux (the containers CI
+   environment). The builder stage does run and fails only at the
+   `dnf-installroot` step.
 
 ## Risks / open items
 
