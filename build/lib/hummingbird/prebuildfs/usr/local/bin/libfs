@@ -1,0 +1,108 @@
+#!/bin/bash
+# libfs - filesystem helpers for non-root containers on (mostly) read-only filesystems.
+# No ownership changes, no ACLs: a write is attempted, and on failure a JSON warning
+# is logged instead of aborting the container.
+
+# shellcheck source=/usr/local/bin/liblog
+. /usr/local/bin/liblog
+
+ensure_dir_exists() {                 # ensure_dir_exists <dir>
+    local dir="${1:?missing directory}"
+    [[ -d "$dir" ]] && return 0
+    mkdir -p "$dir" 2>/dev/null || { debug "fs: cannot create directory ${dir}"; return 1; }
+    return 0
+}
+
+fs_dir_writable() {                   # fs_dir_writable <dir>
+    local dir="${1:?missing directory}"
+    [[ -d "$dir" && -w "$dir" ]]
+}
+
+fs_file_writable() {                  # fs_file_writable <file>
+    local file="${1:?missing file}" dir=""
+    if [[ -f "$file" ]]; then
+        [[ -w "$file" ]]
+    else
+        dir="${file%/*}"
+        [[ "$dir" == "$file" ]] && dir="."
+        fs_dir_writable "$dir"
+    fi
+}
+
+fs_read() {                           # fs_read <file> -> contents (exit 1 when unreadable)
+    local file="${1:?missing file}"
+    [[ -r "$file" ]] || return 1
+    printf '%s' "$(< "$file")"
+}
+
+fs_atomic_write() {                   # fs_atomic_write <file> <content>
+    local file="${1:?missing file}" content="${2:-}"
+    local dir=""
+    dir="${file%/*}"
+    [[ "$dir" == "$file" ]] && dir="."
+    ensure_dir_exists "$dir" || return 1
+    if ! fs_dir_writable "$dir"; then
+        warn "fs: ${dir} is not writable (read-only filesystem?); not writing ${file}"
+        return 1
+    fi
+    local tmp="${file}.tmp.$$"
+    printf '%s\n' "$content" > "$tmp" 2>/dev/null || {
+        rm -f "$tmp" 2>/dev/null
+        warn "fs: cannot write ${tmp}"
+        return 1
+    }
+    mv -f "$tmp" "$file" 2>/dev/null || {
+        rm -f "$tmp" 2>/dev/null
+        warn "fs: cannot replace ${file}"
+        return 1
+    }
+    return 0
+}
+
+fs_list() {                           # fs_list <dir> -> entry names, one per line
+    local dir="${1:?missing directory}"
+    local f=""
+    for f in "$dir"/* "$dir"/.[!.]*; do
+        [[ -e "$f" ]] && printf '%s\n' "${f##*/}"
+    done
+}
+
+_fs_fingerprint_tool() {              # strongest available content hash tool
+    if command -v md5sum >/dev/null 2>&1; then printf 'md5'; return; fi
+    if command -v cksum >/dev/null 2>&1; then printf 'cksum'; return; fi
+    if command -v stat >/dev/null 2>&1; then printf 'stat'; return; fi
+    printf 'size'
+}
+
+fs_fingerprint() {                    # fs_fingerprint <path> : file, directory or 'missing'
+    local path="${1:?missing path}"
+    local h=""
+    if [[ -f "$path" ]]; then
+        case "$(_fs_fingerprint_tool)" in
+            md5)  h="$(md5sum "$path" 2>/dev/null)"; printf 'f:%s' "${h%% *}" ;;
+            cksum) h="$(cksum "$path" 2>/dev/null)"; printf 'f:%s' "${h%% *}" ;;
+            stat) printf 'f:%s' "$(stat -c '%s:%Y' "$path" 2>/dev/null)" ;;
+            *)    printf 'f:%s' "$(wc -c < "$path" 2>/dev/null)" ;;
+        esac
+    elif [[ -d "$path" ]]; then
+        local name="" fp="d:"
+        while IFS= read -r name; do
+            fp+="${name}=$(fs_fingerprint "${path}/${name}");"
+        done < <(fs_list "$path")
+        printf '%s' "$fp"
+    else
+        printf 'missing'
+    fi
+}
+
+fs_substitute() {                     # fs_substitute <file> <pattern> <replacement>
+    local file="${1:?missing file}" pat="${2:?missing pattern}" rep="${3:-}"
+    local content="" out=""
+    content="$(fs_read "$file")" || return 1
+    if command -v sed >/dev/null 2>&1; then
+        out="$(printf '%s' "$content" | sed -E "s|${pat}|${rep}|g")" || return 1
+    else
+        out="${content//$pat/$rep}"   # literal fallback when sed is absent
+    fi
+    fs_atomic_write "$file" "$out"
+}

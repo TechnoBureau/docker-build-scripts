@@ -1,0 +1,61 @@
+#!/bin/bash
+# libwatch - file watcher engine (the only watcher kind in this toolkit;
+# secret/service-account watching and route/DNS detection are not included).
+# Watches config files/directories for content changes and runs a hook
+# (reload / custom command or function) on change. State is kept in memory only.
+
+# shellcheck source=/usr/local/bin/liblog
+. /usr/local/bin/liblog
+# shellcheck source=/usr/local/bin/libfs
+. /usr/local/bin/libfs
+
+watch_fingerprint() {                  # watch_fingerprint <paths...>
+    local fp="" t="" name=""
+    for t in "$@"; do
+        if [[ -e "$t" ]]; then
+            if [[ -d "$t" ]]; then
+                while IFS= read -r name; do
+                    fp+="${t}/${name}=$(fs_fingerprint "${t}/${name}");"
+                done < <(fs_list "$t")
+            else
+                fp+="${t}=$(fs_fingerprint "$t");"
+            fi
+        else
+            fp+="${t}=MISSING;"        # created/deleted targets are detected too
+        fi
+    done
+    printf '%s' "$fp"
+}
+
+watch_hook() {                          # watch_hook <hook>
+    local hook="${1:-}"
+    case "$hook" in
+        ""|none) : ;;
+        reload) ws_reload || warn "watch: reload hook failed" ;;
+        *) eval "$hook" ;;              # custom command or function (e.g. entrypoint_apply)
+    esac
+}
+
+watch_run() {                           # watch_run <name> <interval> <hook> <targets...>
+    local name="${1:?missing name}"
+    local interval="${2:-5}" hook="${3:-none}"
+    shift 3
+    local -a targets=("$@")
+    local prev="" cur="" det=0
+    if [[ "${#targets[@]}" -eq 0 ]]; then
+        warn "watch: [${name}] no targets configured"
+        return 1
+    fi
+    log_event "file.watch.started" info "[${name}] watching ${#targets[@]} target(s) (interval ${interval}s, hook: ${hook})"
+    prev="$(watch_fingerprint "${targets[@]}")"
+    while :; do
+        sleep "$interval"
+        cur="$(watch_fingerprint "${targets[@]}")"
+        if [[ "$cur" != "$prev" ]]; then
+            (( det++ ))
+            log_event "file.changed" info "[${name}] change detected (event #${det}); running hook"
+            watch_hook "$hook"
+            prev="$cur"
+        fi
+    done
+}

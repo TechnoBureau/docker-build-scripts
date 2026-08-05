@@ -1,0 +1,63 @@
+#!/bin/bash
+# libenv - environment helpers, safe for read-only filesystems (nothing writes by default;
+# env_dump degrades to a no-op when the target directory is not writable).
+
+# shellcheck source=/usr/local/bin/liblog
+. /usr/local/bin/liblog
+# shellcheck source=/usr/local/bin/libfs
+. /usr/local/bin/libfs
+
+is_boolean_yes() {                    # is_boolean_yes <value> : true for 1/yes/true (any case)
+    local bool="${1:-}"
+    shopt -s nocasematch
+    [[ "$bool" = 1 || "$bool" =~ ^(yes|true)$ ]]
+}
+
+env_get() {                           # env_get <name> [default]
+    local name="${1:?missing variable name}" def="${2:-}"
+    if [[ -n "${!name+x}" ]]; then
+        printf '%s' "${!name}"
+    else
+        printf '%s' "$def"
+    fi
+}
+
+env_bool() {                          # env_bool <name> [default] -> true|false
+    local val=""
+    val="$(env_get "$1" "${2:-false}")"
+    if is_boolean_yes "$val"; then printf 'true'; else printf 'false'; fi
+}
+
+env_render() {                        # env_render <template> : substitute ${VAR} and $VAR
+    local tpl="${1:-}" out="$1" v=""
+    local -i guard=0
+    while [[ "$out" =~ \$\{([A-Za-z_][A-Za-z0-9_]*)\} ]] && (( guard++ < 50 )); do
+        v="${BASH_REMATCH[1]}"
+        out="${out//\$\{$v\}/${!v:-}}"
+    done
+    printf '%s' "$out"
+}
+
+env_dump() {                          # env_dump <file> : write `export K="V"` lines
+    local file="${1:?missing file}"
+    local dir=""
+    dir="${file%/*}"
+    [[ "$dir" == "$file" ]] && dir="."
+    if ! fs_dir_writable "$dir"; then
+        debug "env: ${dir} is not writable; skipping env dump (read-only filesystem)"
+        return 1
+    fi
+    local exclude='^(LANG|TERM|OLDPWD|PWD|SHLVL|HOSTNAME|BASH|SHELL|USER|HOME|PATH|_)|[^a-zA-Z0-9_]|_+$'
+    local out="" v="" vv=""
+    while IFS= read -r v; do
+        [[ "$v" =~ $exclude ]] && continue
+        vv="${!v}"
+        vv="${vv//\\/\\\\}"
+        vv="${vv//\"/\\\"}"
+        vv="${vv//\$/\\\$}"
+        vv="${vv//\`/\\\`}"
+        out+="export ${v}=\"${vv}\"\n"
+    done < <(compgen -e)
+    printf '%b' "$out" > "${file}.tmp.$$" 2>/dev/null && mv -f "${file}.tmp.$$" "$file" 2>/dev/null
+    debug "env: dumped environment exports to ${file}"
+}

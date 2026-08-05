@@ -1,0 +1,384 @@
+#!/bin/bash
+# libjson - tiny pure-bash JSON reader (no jq, grep, sed or awk required)
+# Supports objects, arrays, strings (incl. \uXXXX escapes, BMP), numbers, booleans and null.
+#
+# Public API:
+#   json_get <doc> <dotted.path>   value (strings unquoted/unescaped; objects/arrays echoed raw);
+#                                  exits 1 when the path does not exist
+#   json_has <doc> <dotted.path>   exits 0 when the path exists
+#   json_len <doc> <dotted.path>   number of array items / object keys (0 when absent)
+#   json_keys <doc> <dotted.path>  one key (or array index) per line, document order
+#   json_escape <string>           JSON-escaped string, for building JSON output
+
+JSON_DOC=""      # document being parsed
+JSON_POS=0       # cursor into JSON_DOC
+JSON_KIND=""     # string|number|bool|null|object|array
+JSON_VAL=""      # scalar value
+JSON_STR=""      # last string parsed
+
+_json_skip_ws() {
+    while (( JSON_POS < ${#JSON_DOC} )); do
+        case "${JSON_DOC:JSON_POS:1}" in
+            ' '|$'\t'|$'\n'|$'\r') ((JSON_POS++)) ;;
+            *) break ;;
+        esac
+    done
+}
+
+_json_parse_string() {
+    JSON_STR=""
+    [[ "${JSON_DOC:JSON_POS:1}" == '"' ]] || return 1
+    ((JSON_POS++))
+    local ch="" hex=""
+    while (( JSON_POS < ${#JSON_DOC} )); do
+        ch="${JSON_DOC:JSON_POS:1}"
+        if [[ "$ch" == '"' ]]; then
+            ((JSON_POS++))
+            return 0
+        elif [[ "$ch" == '\' ]]; then
+            ((JSON_POS++))
+            ch="${JSON_DOC:JSON_POS:1}"
+            case "$ch" in
+                '"') JSON_STR+='"' ;;
+                '\') JSON_STR+='\' ;;
+                '/') JSON_STR+='/' ;;
+                'b') JSON_STR+=$'\b' ;;
+                'f') JSON_STR+=$'\f' ;;
+                'n') JSON_STR+=$'\n' ;;
+                'r') JSON_STR+=$'\r' ;;
+                't') JSON_STR+=$'\t' ;;
+                'u')
+                    hex="${JSON_DOC:JSON_POS+1:4}"
+                    ((JSON_POS += 4))
+                    [[ "$hex" =~ ^[0-9a-fA-F]{4}$ ]] && JSON_STR+="$(printf "\\u${hex}")"
+                    ;;
+                *) JSON_STR+="$ch" ;;
+            esac
+            ((JSON_POS++))
+        else
+            JSON_STR+="$ch"
+            ((JSON_POS++))
+        fi
+    done
+    return 1
+}
+
+_json_skip_value() {
+    _json_skip_ws
+    local ch="${JSON_DOC:JSON_POS:1}"
+    case "$ch" in
+        '"')
+            _json_parse_string
+            ;;
+        '{')
+            ((JSON_POS++))
+            _json_skip_ws
+            if [[ "${JSON_DOC:JSON_POS:1}" == '}' ]]; then
+                ((JSON_POS++))
+                return 0
+            fi
+            while :; do
+                _json_skip_ws
+                [[ "${JSON_DOC:JSON_POS:1}" == '"' ]] || return 1
+                _json_parse_string || return 1
+                _json_skip_ws
+                [[ "${JSON_DOC:JSON_POS:1}" == ':' ]] || return 1
+                ((JSON_POS++))
+                _json_skip_value || return 1
+                _json_skip_ws
+                case "${JSON_DOC:JSON_POS:1}" in
+                    ',') ((JSON_POS++)) ;;
+                    '}') ((JSON_POS++)); return 0 ;;
+                    *) return 1 ;;
+                esac
+            done
+            ;;
+        '[')
+            ((JSON_POS++))
+            _json_skip_ws
+            if [[ "${JSON_DOC:JSON_POS:1}" == ']' ]]; then
+                ((JSON_POS++))
+                return 0
+            fi
+            while :; do
+                _json_skip_value || return 1
+                _json_skip_ws
+                case "${JSON_DOC:JSON_POS:1}" in
+                    ',') ((JSON_POS++)) ;;
+                    ']') ((JSON_POS++)); return 0 ;;
+                    *) return 1 ;;
+                esac
+            done
+            ;;
+        't')
+            if [[ "${JSON_DOC:JSON_POS:4}" == "true" ]]; then ((JSON_POS += 4)); return 0; fi
+            return 1
+            ;;
+        'f')
+            if [[ "${JSON_DOC:JSON_POS:5}" == "false" ]]; then ((JSON_POS += 5)); return 0; fi
+            return 1
+            ;;
+        'n')
+            if [[ "${JSON_DOC:JSON_POS:4}" == "null" ]]; then ((JSON_POS += 4)); return 0; fi
+            return 1
+            ;;
+        *)
+            local s=$JSON_POS
+            while (( JSON_POS < ${#JSON_DOC} )); do
+                case "${JSON_DOC:JSON_POS:1}" in
+                    [0-9.eE+-]) ((JSON_POS++)) ;;
+                    *) break ;;
+                esac
+            done
+            (( JSON_POS > s )) && return 0
+            return 1
+            ;;
+    esac
+}
+
+_json_value() {
+    _json_skip_ws
+    local ch="${JSON_DOC:JSON_POS:1}"
+    case "$ch" in
+        '"')
+            JSON_KIND="string"
+            _json_parse_string || return 1
+            JSON_VAL="$JSON_STR"
+            ;;
+        '{') JSON_KIND="object" ;;
+        '[') JSON_KIND="array" ;;
+        't') JSON_KIND="bool"; JSON_VAL="true"; ((JSON_POS += 4)) ;;
+        'f') JSON_KIND="bool"; JSON_VAL="false"; ((JSON_POS += 5)) ;;
+        'n') JSON_KIND="null"; JSON_VAL="null"; ((JSON_POS += 4)) ;;
+        *)
+            local s=$JSON_POS
+            while (( JSON_POS < ${#JSON_DOC} )); do
+                case "${JSON_DOC:JSON_POS:1}" in
+                    [0-9.eE+-]) ((JSON_POS++)) ;;
+                    *) break ;;
+                esac
+            done
+            if (( JSON_POS > s )); then
+                JSON_KIND="number"
+                JSON_VAL="${JSON_DOC:s:JSON_POS-s}"
+            else
+                return 1
+            fi
+            ;;
+    esac
+    return 0
+}
+
+_json_object_find_key() {   # cursor at '{'; on success cursor at the value
+    local want="${1:?missing key}"
+    _json_skip_ws
+    [[ "${JSON_DOC:JSON_POS:1}" == '{' ]] || return 1
+    ((JSON_POS++))
+    _json_skip_ws
+    if [[ "${JSON_DOC:JSON_POS:1}" == '}' ]]; then
+        ((JSON_POS++))
+        return 1
+    fi
+    while :; do
+        _json_skip_ws
+        [[ "${JSON_DOC:JSON_POS:1}" == '"' ]] || return 1
+        _json_parse_string || return 1
+        _json_skip_ws
+        [[ "${JSON_DOC:JSON_POS:1}" == ':' ]] || return 1
+        ((JSON_POS++))
+        _json_skip_ws
+        if [[ "$JSON_STR" == "$want" ]]; then
+            return 0
+        fi
+        _json_skip_value || return 1
+        _json_skip_ws
+        case "${JSON_DOC:JSON_POS:1}" in
+            ',') ((JSON_POS++)) ;;
+            '}') ((JSON_POS++)); return 1 ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
+_json_array_index() {       # cursor at '['; on success cursor at the value
+    local want="${1:?missing index}"
+    local i=0
+    _json_skip_ws
+    [[ "${JSON_DOC:JSON_POS:1}" == '[' ]] || return 1
+    ((JSON_POS++))
+    _json_skip_ws
+    if [[ "${JSON_DOC:JSON_POS:1}" == ']' ]]; then
+        ((JSON_POS++))
+        return 1
+    fi
+    while :; do
+        if [[ "$i" == "$want" ]]; then
+            return 0
+        fi
+        _json_skip_value || return 1
+        ((i++))
+        _json_skip_ws
+        case "${JSON_DOC:JSON_POS:1}" in
+            ',') ((JSON_POS++)) ;;
+            ']') ((JSON_POS++)); return 1 ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
+_json_array_count() {       # cursor at '['; prints item count
+    local n=0
+    ((JSON_POS++))
+    _json_skip_ws
+    if [[ "${JSON_DOC:JSON_POS:1}" == ']' ]]; then
+        ((JSON_POS++))
+        printf '0'
+        return 0
+    fi
+    while :; do
+        ((n++))
+        _json_skip_value || return 1
+        _json_skip_ws
+        case "${JSON_DOC:JSON_POS:1}" in
+            ',') ((JSON_POS++)) ;;
+            ']') ((JSON_POS++)); printf '%d' "$n"; return 0 ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
+_json_object_count() {      # cursor at '{'; prints key count
+    local n=0
+    ((JSON_POS++))
+    _json_skip_ws
+    if [[ "${JSON_DOC:JSON_POS:1}" == '}' ]]; then
+        ((JSON_POS++))
+        printf '0'
+        return 0
+    fi
+    while :; do
+        _json_skip_ws
+        [[ "${JSON_DOC:JSON_POS:1}" == '"' ]] || return 1
+        _json_parse_string || return 1
+        ((n++))
+        _json_skip_ws
+        [[ "${JSON_DOC:JSON_POS:1}" == ':' ]] || return 1
+        ((JSON_POS++))
+        _json_skip_value || return 1
+        _json_skip_ws
+        case "${JSON_DOC:JSON_POS:1}" in
+            ',') ((JSON_POS++)) ;;
+            '}') ((JSON_POS++)); printf '%d' "$n"; return 0 ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
+_json_descend() {           # resolve dotted path; leaves JSON_KIND/JSON_VAL/JSON_POS at the target
+    local path="${1:-}" seg=""
+    local -a segs=()
+    JSON_POS=0
+    JSON_KIND=""
+    JSON_VAL=""
+    _json_value || return 1
+    if [[ -n "$path" ]]; then
+        IFS='.' read -r -a segs <<< "$path"
+        for seg in "${segs[@]}"; do
+            if [[ "$JSON_KIND" == "object" ]]; then
+                _json_object_find_key "$seg" || return 1
+            elif [[ "$JSON_KIND" == "array" ]]; then
+                _json_array_index "$seg" || return 1
+            else
+                return 1
+            fi
+            _json_value || return 1
+        done
+    fi
+    return 0
+}
+
+json_get() {
+    local doc="${1:-}" path="${2:-}"
+    JSON_DOC="$doc"
+    _json_descend "$path" || return 1
+    if [[ "$JSON_KIND" == "object" || "$JSON_KIND" == "array" ]]; then
+        local s=$JSON_POS
+        _json_skip_value || return 1
+        printf '%s' "${JSON_DOC:s:JSON_POS-s}"
+    else
+        printf '%s' "$JSON_VAL"
+    fi
+}
+
+json_has() {
+    json_get "$1" "$2" >/dev/null 2>&1
+}
+
+json_len() {
+    local doc="${1:-}" path="${2:-}"
+    JSON_DOC="$doc"
+    _json_descend "$path" || { printf '0'; return 1; }
+    if [[ "$JSON_KIND" == "array" ]]; then
+        _json_array_count
+    elif [[ "$JSON_KIND" == "object" ]]; then
+        _json_object_count
+    else
+        printf '0'
+    fi
+}
+
+json_keys() {
+    local doc="${1:-}" path="${2:-}" n="" i=0
+    JSON_DOC="$doc"
+    _json_descend "$path" || return 1
+    if [[ "$JSON_KIND" == "object" ]]; then
+        ((JSON_POS++))
+        _json_skip_ws
+        [[ "${JSON_DOC:JSON_POS:1}" == '}' ]] && return 0
+        while :; do
+            _json_skip_ws
+            _json_parse_string || return 1
+            printf '%s\n' "$JSON_STR"
+            _json_skip_ws
+            [[ "${JSON_DOC:JSON_POS:1}" == ':' ]] || return 1
+            ((JSON_POS++))
+            _json_skip_value || return 1
+            _json_skip_ws
+            case "${JSON_DOC:JSON_POS:1}" in
+                ',') ((JSON_POS++)) ;;
+                '}') ((JSON_POS++)); return 0 ;;
+                *) return 1 ;;
+            esac
+        done
+    elif [[ "$JSON_KIND" == "array" ]]; then
+        n="$(_json_array_count)"
+        for (( i = 0; i < n; i++ )); do
+            printf '%s\n' "$i"
+        done
+    fi
+}
+
+json_escape() {
+    local s="${1:-}" out="" ch=""
+    local -i i
+    for (( i = 0; i < ${#s}; i++ )); do
+        ch="${s:i:1}"
+        case "$ch" in
+            '"') out+='\"' ;;
+            '\') out+='\\' ;;
+            $'\b') out+='\b' ;;
+            $'\f') out+='\f' ;;
+            $'\n') out+='\n' ;;
+            $'\r') out+='\r' ;;
+            $'\t') out+='\t' ;;
+            *)
+                if [[ "$ch" =~ [[:print:]] || "$ch" == " " ]]; then
+                    out+="$ch"
+                else
+                    out+="$(printf '\\u%04x' "'$ch")"
+                fi
+                ;;
+        esac
+    done
+    printf '%s' "$out"
+}

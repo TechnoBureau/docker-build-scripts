@@ -1,0 +1,55 @@
+#!/bin/bash
+# liblog - JSON-stream logging, identical for every component.
+# Each call emits exactly one JSON object per line on stdout:
+#   {"level":"info","ts":"2026-08-05T04:00:00Z","msg":"...","component":"watch","event":"file.changed"}
+# Timestamp comes from the bash builtin printf (no `date` binary needed).
+
+# shellcheck source=/usr/local/bin/libjson
+. /usr/local/bin/libjson
+
+LOG_LEVEL="${ENTRYPOINT_LOG_LEVEL:-info}"   # debug|info|warn|error
+LOG_COMPONENT="${ENTRYPOINT_LOG_COMPONENT:-}"   # tag added to every line
+LOG_EVENT=""                          # tag for the current call only
+
+_log_ts() {
+    TZ=UTC printf '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+}
+
+_log_enabled() {                      # _log_enabled <level>
+    local lvl="${1:-info}" a=0 b=0
+    case "${LOG_LEVEL,,}" in
+        debug) a=0 ;; error) a=3 ;; warn) a=2 ;; *) a=1 ;;
+    esac
+    case "${lvl,,}" in
+        debug) b=0 ;; error) b=3 ;; warn) b=2 ;; *) b=1 ;;
+    esac
+    (( b >= a ))
+}
+
+log() {                               # log <level> <message...>
+    local level="${1:-info}"
+    shift
+    _log_enabled "$level" || return 0
+    local msg="${*:-}" ts="" comp="" ev=""
+    ts="$(_log_ts)"
+    [[ -n "$LOG_COMPONENT" ]] && comp=",\"component\":\"$(json_escape "$LOG_COMPONENT")\""
+    [[ -n "$LOG_EVENT" ]] && ev=",\"event\":\"$(json_escape "$LOG_EVENT")\""
+    printf '{"level":"%s","ts":"%s","msg":"%s"%s%s}\n' "$level" "$ts" "$(json_escape "$msg")" "$comp" "$ev"
+}
+
+log_event() {                         # log_event <event> <level> <message...>
+    local event="${1:-}"
+    shift
+    local level="${1:-info}"
+    shift
+    LOG_EVENT="$event" log "$level" "$@"
+}
+
+log_component() {                     # log_component <name>
+    LOG_COMPONENT="${1:-}"
+}
+
+info()  { log info "$@"; }
+warn()  { log warn "$@"; }
+error() { log error "$@"; }
+debug() { log debug "$@"; }
