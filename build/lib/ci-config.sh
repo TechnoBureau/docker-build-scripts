@@ -36,6 +36,8 @@ if [[ -z "${CI_CORE_LOADED:-}" ]]; then
     source "${LIB_DIR}/ci-dockerfile.sh"
     # shellcheck source=/dev/null
     source "${LIB_DIR}/ci-yaml.sh"
+    # shellcheck source=/dev/null
+    source "${LIB_DIR}/ci-secrets.sh"
 fi
 
 # Ensure CONFIG, REGISTRIES, and SIGN_REGISTRIES arrays exist
@@ -43,33 +45,7 @@ declare -gA CONFIG 2>/dev/null || true
 declare -ga REGISTRIES 2>/dev/null || true
 declare -ga SIGN_REGISTRIES 2>/dev/null || true
 
-# =============================================================================
-# auto_add_secrets_from_dockerfile
-# Purpose:
-#   Automatically add secrets detected in Dockerfile to BUILD_SECRETS
-#   if matching environment variables exist
-# Input:
-#   Uses CONFIG[SECRET_*] entries populated by parse_dockerfile_secrets
-# Output:
-#   Updates CONFIG[BUILD_SECRETS] with id=ENV_VAR pairs
-# WHY:
-#   Reduces manual configuration - auto-mount secrets when env vars present
-# =============================================================================
-auto_add_secrets_from_dockerfile() {
-    local id env_val
-    for key in "${!CONFIG[@]}"; do
-        [[ "$key" =~ ^SECRET_([^=]+)$ ]] || continue
-        id="${BASH_REMATCH[1]}"
-        # Look for an environment variable with the same name
-        env_val="${!id:-}"
-        if [[ -n "$env_val" ]]; then
-            CONFIG[BUILD_SECRETS]="${CONFIG[BUILD_SECRETS]:+${CONFIG[BUILD_SECRETS]},}${id}=${id}"
-            log_info "Auto-added secret $id (from env $id)"
-        else
-            log_debug "Secret $id found in Dockerfile but no matching env var"
-        fi
-    done
-}
+# auto_add_secrets_from_dockerfile is defined in ci-secrets.sh (sourced above)
 
 # =============================================================================
 # build_registries_array
@@ -186,11 +162,12 @@ build_sign_registries_array() {
 # =============================================================================
 # load_config
 # Purpose:
-#   Load and merge configuration from Dockerfile, YAML, and environment
-#   Implements priority: Dockerfile > YAML > ENV > defaults
+#   Load and merge configuration from Dockerfile and environment.
+#   Implements priority: Dockerfile > ENV > defaults.
+#   Optionally loads a YAML config file when an explicit path is provided.
 # Input:
 #   $1 - Dockerfile path
-#   $2 - config YAML path (optional)
+#   $2 - config YAML path (optional; leave empty or omit to skip YAML loading)
 # Output:
 #   Populates CONFIG array and REGISTRIES array
 # WHY:
@@ -198,7 +175,7 @@ build_sign_registries_array() {
 # =============================================================================
 load_config() {
     local dockerfile="$1"
-    local config_yaml="$2"
+    local config_yaml="${2:-}"
 
     # 1️⃣ Parse Dockerfile comments, secrets, args, and FROM registries
     parse_dockerfile_comments "$dockerfile"

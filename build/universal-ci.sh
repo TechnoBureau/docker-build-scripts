@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
-# ci-main.sh
+# universal-ci.sh
 #
 # Purpose:
 #   Main build orchestration function that coordinates the entire CI pipeline.
 #   Integrates all other modules: config loading, git info, buildx setup,
-#   build/push, signing, and artifact management.
+#   build/push, and artifact management.
 #
-# Usage:
-#   source build/ci-main.sh
+# Usage (source-and-call contract):
+#   source "$BUILD_IMG_PATH/../../scripts/build/universal-ci.sh"
+#   main_build -i "$IMAGE_NAME" "$@"
 #
 # Functions:
 #   main_build [options]
 #
 # Options:
 #   -d, --dockerfile FILE    Path to Dockerfile
-#   -c, --config FILE        Path to config YAML
 #   -i, --image NAME         Image name
 #   -r, --repo URL           Git repository URL
 #   -b, --branch NAME        Git branch (default: main)
+#   -f, --flavor NAME        Force build flavor (dockerfile|hummingbird)
 #
 # Example:
-#   main_build -d /path/to/Dockerfile -i myimage
+#   main_build -i myimage
 #
 
 # =============================================================================
@@ -44,8 +45,6 @@ fi
 # Always source these libraries (they have their own guards or are idempotent)
 # shellcheck source=/dev/null
 source "${LIB_DIR}/ci-dockerfile.sh" 2>/dev/null || true
-# shellcheck source=/dev/null
-source "${LIB_DIR}/ci-yaml.sh" 2>/dev/null || true
 # shellcheck source=/dev/null
 source "${LIB_DIR}/ci-secrets.sh" 2>/dev/null || true
 # shellcheck source=/dev/null
@@ -77,7 +76,7 @@ source "${LIB_DIR}/ci-hummingbird.sh" 2>/dev/null || true
 #   Single function to execute complete CI pipeline
 # =============================================================================
 main_build() {
-    local dockerfile="" config_yaml="" image_name="" git_repo="" branch="" flavor=""
+    local dockerfile="" image_name="" git_repo="" branch="" flavor=""
 
     # Backward-compatible positional image name (docker-builds build.sh convention)
     if [[ $# -gt 0 && "$1" != -* ]]; then
@@ -89,7 +88,6 @@ main_build() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -d|--dockerfile) dockerfile="$2"; shift 2 ;;
-            -c|--config) config_yaml="$2"; shift 2 ;;
             -i|--image) image_name="$2"; shift 2 ;;
             -r|--repo) git_repo="$2"; shift 2 ;;
             -b|--branch) branch="$2"; shift 2 ;;
@@ -174,15 +172,9 @@ main_build() {
         CONFIG[IMAGE_NAME]=$(basename "$(dirname "$dockerfile")" 2>/dev/null || echo "unnamed")
     fi
 
-    # Find config YAML if not specified
-    if [[ -z "$config_yaml" && -n "${BUILDERS_DIR:-}" ]]; then
-        config_yaml=$(find "$BUILDERS_DIR" -name build.yaml -o -name config.yaml 2>/dev/null | head -1)
-        [[ -n "$config_yaml" ]] && log_info "Found config: $config_yaml"
-    fi
-
-    # Load configuration (Dockerfile + YAML + ENV)
+    # Load configuration (Dockerfile + ENV)
     log_info "Loading configuration..."
-    load_config "$dockerfile" "$config_yaml"
+    load_config "$dockerfile"
 
     # Extract Git information
     if [[ -d "${SOURCE_DIR:-}/.git" ]]; then

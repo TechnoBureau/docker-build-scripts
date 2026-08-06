@@ -2,16 +2,15 @@
 # lib/ci-build.sh
 #
 # Purpose:
-#   Build orchestration (setup_buildx, builder contexts, tag generation, build_and_push).
-#   Preserves Buildx/podman parity, secrets, labels and tagging mechanics from original scripts.
+#   Build orchestration (setup_buildx, tag generation, build_and_push).
+#   Supports Docker + Podman, single and multi-arch builds, secrets, labels,
+#   and tagging mechanics for both Dockerfile and Hummingbird flows.
 #
 # Usage:
 #   source lib/ci-build.sh
 #
 # Functions:
 #   ci_setup_buildx
-#   ci_add_context <name> <path> (internal)
-#   ci_setup_builder_contexts
 #   ci_build_and_push <Dockerfile> <context>
 #
 # Example:
@@ -246,32 +245,6 @@ ci_setup_buildx(){
     return 0
 }
 
-# add builder contexts (internal)
-ci_add_context(){
-    local name="$1" path="$2"
-    [[ -z "$name" || -z "$path" ]] && return 0
-    [[ "$path" != /* ]] && path="$(realpath -m "$path" 2>/dev/null || echo "$PWD/$path")"
-    [[ ! -d "$path" ]] && { log_debug "ci_add_context: path not found: $path"; return 0; }
-    # callers will build build_args list and ignore unsupported --context flags for some engines
-    BUILD_CONTEXTS="${BUILD_CONTEXTS:-},${name}=${path}"
-}
-
-# populate default contexts
-ci_setup_builder_contexts(){
-    # Add common directories if present
-
-    if [[ -d "${SCRIPTS_DIR:-./scripts}/build" ]]; then ci_add_context build "${SCRIPTS_DIR:-./scripts}/build"; fi
-    if [[ -d "${DOCKER_DIR:-./docker}" ]]; then ci_add_context docker "${DOCKER_DIR:-./docker}"; fi
-    if [[ -d "${PREBUILD_DIR:-./prebuildfs}" ]]; then ci_add_context prebuildfs "${PREBUILD_DIR:-./prebuildfs}"; fi
-    # any additional contexts via CONFIG[BUILDER_CONTEXTS] (CSV of name=path)
-    # WHY: Use CONFIG[BUILDER_CONTEXTS] from parsed config, not env var
-    if [[ -n "${CONFIG[BUILDER_CONTEXTS]:-}" ]]; then
-        IFS=',' read -r -a arr <<< "${CONFIG[BUILDER_CONTEXTS]}"
-        for c in "${arr[@]:-}"; do
-            if [[ "$c" =~ ^([^=]+)=(.+)$ ]]; then ci_add_context "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; fi
-        done
-    fi
-}
 
 
 # Main build and push function. Respects REGISTRIES array entries (name,prefix,push)
@@ -555,9 +528,6 @@ ci_build_and_push(){
     fi
 
 
-    # contexts handling - attempt to use buildx --context if supported
-    ci_setup_builder_contexts
-    # expand BUILD_CONTEXTS to --context args, but avoid passing them to engines that do not support them:
     if [[ "$engine" == "docker" ]]; then
         # WHY: Multi-platform build with configurable parallelism
         if [[ -n "$platforms" && "$platforms" == *","* ]]; then
@@ -597,21 +567,12 @@ ci_build_and_push(){
                         done
                         filtered_args+=("--platform" "$plat")
 
-                        # Remove --context args
-                        local docker_args=()
-                        local prev=""
-                        for a in "${filtered_args[@]}"; do
-                            if [[ "$a" == "--context" ]]; then prev="--context"; continue; fi
-                            if [[ "$prev" == "--context" ]]; then prev=""; continue; fi
-                            docker_args+=("$a")
-                        done
-
                         # Build image
                         local chunkah_mount=()
                         if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
                             chunkah_mount=(-v "$context:/run/src" --security-opt=label=disable)
                         fi
-                        $engine build "${chunkah_mount[@]}" "${docker_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || exit 1
+                        $engine build "${chunkah_mount[@]}" "${filtered_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || exit 1
 
                         # Push and save artifacts
                         local primary_registry=""
@@ -661,21 +622,12 @@ ci_build_and_push(){
                     done
                     filtered_args+=("--platform" "$plat")
 
-                    # Remove --context args
-                    local docker_args=()
-                    local prev=""
-                    for a in "${filtered_args[@]}"; do
-                        if [[ "$a" == "--context" ]]; then prev="--context"; continue; fi
-                        if [[ "$prev" == "--context" ]]; then prev=""; continue; fi
-                        docker_args+=("$a")
-                    done
-
                     # Build and push
                     local chunkah_mount=()
                     if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
                         chunkah_mount=(-v "$context:/run/src" --security-opt=label=disable)
                     fi
-                    $engine build "${chunkah_mount[@]}" "${docker_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || {
+                    $engine build "${chunkah_mount[@]}" "${filtered_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || {
                         log_error "Platform build failed: $plat"
                         return 1
                     }
@@ -729,16 +681,8 @@ ci_build_and_push(){
 
             log_success "All ${#platform_list[@]} platform builds completed"
         else
-            # Single platform build
-            local docker_args=()
-            local prev=""
-            for a in "${build_args[@]}"; do
-                if [[ "$a" == "--context" ]]; then prev="--context"; continue; fi
-                if [[ "$prev" == "--context" ]]; then prev=""; continue; fi
-                docker_args+=("$a")
-            done
             log_info "Building single platform image with Docker"
-            $engine build "${docker_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || return 1
+            $engine build "${build_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || return 1
 
             for img in "${CI_BUILT_IMAGES[@]}"; do
                 log_info "Pushing $img"
@@ -746,14 +690,8 @@ ci_build_and_push(){
             done
         fi
     else
-        # podman - remove context flags and use podman build
-        local podman_args=()
-        local prev=""
-        for a in "${build_args[@]:-}"; do
-            if [[ "$a" == "--context" ]]; then prev="--context"; continue; fi
-            if [[ "$prev" == "--context" ]]; then prev=""; continue; fi
-            podman_args+=("$a")
-        done
+        # podman - build args are already clean; use podman build directly
+        local podman_args=("${build_args[@]:-}")
 
         # WHY: Add --network=host for Podman to enable network access during build
         podman_args+=("--network=host")

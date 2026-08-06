@@ -60,7 +60,7 @@ export REPO_ROOT SOURCE_DIR BUILDERS_DIR DOCKERFILES_DIR SCRIPTS_DIR ROOTFS_DIR 
 
 # Logging helpers
 log_info(){ printf '[INFO] %s\n' "$*"; }
-log_warn(){ printf '[WARN] %s\n' "$*' >&2"; }  # shellcheck disable=SC2016
+log_warn(){ printf '[WARN] %s\n' "$*" >&2; }
 log_error(){ printf '[ERROR] %s\n' "$*" >&2; }
 log_success(){ printf '[SUCCESS] %s\n' "$*"; }
 log_debug(){
@@ -188,38 +188,6 @@ ci_generate_tag(){
             ;;
         version-runner)      echo "${V}.${R}" ;;
         version-sha)         echo "${V}.${H}" ;;
-        tag)
-            if [[ -n "$GIT_TAG_VAL" ]]; then
-                echo "$GIT_TAG_VAL"
-            else
-                echo "latest"
-            fi
-            ;;
-        tag-latest)
-            if [[ -n "$GIT_TAG_VAL" && "$GIT_TAG_VAL" != "latest" ]]; then
-                echo "$GIT_TAG_VAL latest"
-            else
-                echo "latest"
-            fi
-            ;;
-        version-runner-latest)
-            if [[ "$V" == "latest" ]]; then
-                echo "latest"
-            else
-                primary="${V}.${R}"
-                secondary="latest"
-                echo "$primary $secondary"
-            fi
-            ;;
-        version-sha-latest)
-            if [[ "$V" == "latest" ]]; then
-                echo "latest"
-            else
-                primary="${V}.${H}"
-                secondary="latest"
-                echo "$primary $secondary"
-            fi
-            ;;
         tag)
             if [[ -n "$GIT_TAG_VAL" ]]; then
                 echo "$GIT_TAG_VAL"

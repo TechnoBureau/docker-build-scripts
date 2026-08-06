@@ -152,6 +152,9 @@ ci_hummingbird_generate() {
     # Image definition files
     cp "${image_dir}/properties.yml" "${hbgen}/images/${image_name}/properties.yml"
     cp "${image_dir}/Containerfile.j2" "${hbgen}/images/${image_name}/Containerfile.j2"
+    # Copy .gitmodules for source-build templates that reference submodule paths
+    [[ -f "${image_dir}/.gitmodules" ]] && \
+        cp "${image_dir}/.gitmodules" "${hbgen}/images/${image_name}/.gitmodules"
     # variables.yml is configuration and lives in the builders repo, not in
     # the code repo. Base: <BUILDERS_DIR>/variables.yml (shared defaults for
     # all builders), overridden by <image_dir>/variables.yml (per-image
@@ -248,7 +251,11 @@ PY
     # 3. Resolve RPM versions (needed for the VERSION file and any tag using
     # a package version macro; always resolved so latest-only images get a
     # meaningful version)
-    ( cd "${hbgen}" && ci/get_rpm_versions.sh ) || {
+    # WHY: Export CONTAINER_ENGINE so get_rpm_versions.sh uses the detected
+    # engine (podman or docker) rather than falling back to a hardcoded default.
+    local _rpm_engine
+    _rpm_engine="$(detect_container_engine 2>/dev/null || echo docker)"
+    ( cd "${hbgen}" && CONTAINER_ENGINE="${_rpm_engine}" ci/get_rpm_versions.sh ) || {
         log_error "get_rpm_versions.sh failed for ${image_name}"
         return 1
     }
@@ -285,9 +292,12 @@ PY
         #    (ci_build_and_push cannot pushd; buildah resolves the archive
         #    relative to CWD). chunkah writes /run/src/out.ociarchive which is
         #    the build context (= hbgen_dir) via the bind mount.
+        #    WHY: Use portable sed -i.bak + rm to support both GNU sed (Linux)
+        #    and BSD sed (macOS); 'sed -i ""' works only on macOS.
         local containerfile="${vdir}/Containerfile"
         if grep -q '^FROM oci-archive:' "${containerfile}"; then
-            sed -i '' "s|^FROM oci-archive:.*|FROM oci-archive:${hbgen_dir}/out.ociarchive|" "${containerfile}"
+            sed -i.bak "s|^FROM oci-archive:.*|FROM oci-archive:${hbgen_dir}/out.ociarchive|" "${containerfile}"
+            rm -f "${containerfile}.bak"
         fi
         log_info "Rendered hummingbird variant: ${image_name}/${variant}"
     done <<< "${variants}"
@@ -448,9 +458,36 @@ PY
 }
 
 # =============================================================================
+# ci_hummingbird_read_variants
+# Purpose:
+#   Read variant list directly from properties.yml (before .hbgen is created).
+#   Used for early validation and pre-selection of HB_VARIANTS before the
+#   expensive generation step runs.
+# Input:
+#   $1 - image directory (must contain properties.yml)
+# Output:
+#   Prints variant names (one per line); falls back to "default" if none declared
+# =============================================================================
+ci_hummingbird_read_variants() {
+    local image_dir="${1:?missing image directory}"
+    local props="${image_dir}/properties.yml"
+    [[ -f "${props}" ]] || { log_error "properties.yml not found: ${props}"; return 1; }
+
+    python3 - "${props}" <<'PY'
+import sys, yaml
+data = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}
+variants = data.get("variants", ["default"])
+if isinstance(variants, list) and variants:
+    print("\n".join(str(v) for v in variants))
+else:
+    print("default")
+PY
+}
+
+# =============================================================================
 # ci_hummingbird_build
 # Purpose:
-#   Full hummingbird pipeline: generate, then build every variant
+#   Full hummingbird pipeline: pre-select variants, generate, then build each
 # Input:
 #   $1 - image directory (with properties.yml + Containerfile.j2)
 # Returns:
@@ -463,20 +500,11 @@ ci_hummingbird_build() {
         return 1
     }
 
-    ci_hummingbird_generate "${image_dir}" || return 1
-
-    # WHY: ci_build_and_push resets CI_BUILT_IMAGES per variant, so accumulate
-    # the images of every variant here for the driver-level post-build loop
-    declare -ga HB_BUILT_IMAGES 2>/dev/null || true
-    HB_BUILT_IMAGES=()
-
-    local variant
+    # WHY: Read and filter variants BEFORE expensive generation so invalid
+    # HB_VARIANTS names are caught early and only selected variants are built.
     local variants
-    variants="$(ci_hummingbird_variants "${image_dir}")" || return 1
+    variants="$(ci_hummingbird_read_variants "${image_dir}")" || return 1
 
-    # HB_VARIANTS filters the build to the listed variants (space or comma
-    # separated), e.g. "default" to skip the builder variant or "default builder"
-    # to build both. Unknown names are rejected with the valid list.
     if [[ -n "${HB_VARIANTS:-}" ]]; then
         local -a all_variants selected=()
         mapfile -t all_variants <<< "${variants}"
@@ -496,6 +524,15 @@ ci_hummingbird_build() {
         log_info "Building variants (HB_VARIANTS): ${selected[*]}"
     fi
 
+    # Generate the work tree for all variants (generation is not per-variant)
+    ci_hummingbird_generate "${image_dir}" || return 1
+
+    # WHY: ci_build_and_push resets CI_BUILT_IMAGES per variant, so accumulate
+    # the images of every variant here for the driver-level post-build loop
+    declare -ga HB_BUILT_IMAGES 2>/dev/null || true
+    HB_BUILT_IMAGES=()
+
+    local variant
     while IFS= read -r variant; do
         [[ -n "${variant}" ]] || continue
         log_info "=== Building hummingbird variant: ${variant} ==="
@@ -515,3 +552,4 @@ ci_hummingbird_build() {
 
     return 0
 }
+
