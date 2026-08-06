@@ -15,6 +15,9 @@ fi
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 BUILDER_IMAGE=${BUILDER_IMAGE:-quay.io/hummingbird-ci/hummingbird-builder:latest}
+# Container engine used to run dnf repoquery; the CI driver exports the
+# detected engine (podman or docker) at the call site.
+CONTAINER_ENGINE=${CONTAINER_ENGINE:-podman}
 CACHE_FILE=".cache/rpm-versions.yml"
 
 mkdir -p .cache
@@ -45,7 +48,7 @@ fi
 TMPFILE=$(mktemp)
 trap 'rm -f "${TMPFILE}"' EXIT
 # shellcheck disable=SC2086  # intentional word splitting for dnf package args
-if ! podman run --rm "${BUILDER_IMAGE}" \
+if ! "${CONTAINER_ENGINE}" run --rm "${BUILDER_IMAGE}" \
     dnf repoquery --quiet --latest-limit=1 --queryformat '%{NAME} %{VERSION}-%{RELEASE}\n' ${packages} 2>/dev/null \
     > "${TMPFILE}"; then
     echo "dnf repoquery failed; is the builder image available?" >&2
