@@ -91,20 +91,6 @@ ci_promote_image() {
         ci_ibmcloud_save_artifact "${full_dest}" "" "true" || log_warn "Failed to save artifact for ${full_dest}"
     fi
 
-    #### Collect SBOM as part of Promotion as well
-    # Generate SBOM
-    # local sbom_file
-    # sbom_file=$(generate_sbom "${full_dest}")
-    # if [[ -n "$sbom_file" && -f "$sbom_file" ]]; then
-    #     log_info "SBOM: $sbom_file"
-    #     ci_collect_sbom_evidence "$sbom_file" "${full_dest}"
-    # elif [[ -n "$sbom_file" ]]; then
-    #     log_warn "SBOM generation reported file '$sbom_file' but it was not found on disk"
-    # else
-    #     log_warn "SBOM generation failed"
-    # fi
-    ####
-
     return 0
 }
 export -f ci_promote_image

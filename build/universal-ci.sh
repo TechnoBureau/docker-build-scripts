@@ -4,7 +4,7 @@
 # Purpose:
 #   Main build orchestration function that coordinates the entire CI pipeline.
 #   Integrates all other modules: config loading, git info, buildx setup,
-#   build/push, SBOM, signing, and artifact management.
+#   build/push, signing, and artifact management.
 #
 # Usage:
 #   source build/ci-main.sh
@@ -59,18 +59,14 @@ source "${LIB_DIR}/ci-artifacts.sh" 2>/dev/null || true
 # shellcheck source=/dev/null
 source "${LIB_DIR}/ci-utils.sh" 2>/dev/null || true
 # shellcheck source=/dev/null
-source "${LIB_DIR}/ci-sbom.sh" 2>/dev/null || true
-# shellcheck source=/dev/null
 source "${LIB_DIR}/ci-hummingbird.sh" 2>/dev/null || true
-# shellcheck source=/dev/null
-source "${LIB_DIR}/ci-vuln.sh" 2>/dev/null || true
 
 # =============================================================================
 # main_build
 # Purpose:
 #   Main entry point for CI build pipeline
-#   Orchestrates: config loading, git info, registry login, build, SBOM,
-#   signing, artifact saving, and cleanup
+#   Orchestrates: config loading, git info, registry login, build, signing,
+#   artifact saving, and cleanup
 # Input:
 #   Command-line arguments (see usage above)
 # Output:
@@ -139,25 +135,8 @@ main_build() {
             return $build_status
         fi
 
-        # Post-build operations (SBOM, vulnerability reports, cleanup)
-        # WHY: HB_BUILT_IMAGES spans all variants; dedupe by image ID so tags
-        # pointing at the same image are scanned once, not once per tag
+        # Post-build cleanup
         if [[ ${#HB_BUILT_IMAGES[@]} -gt 0 ]]; then
-            local -a processed_ids=()
-            local img id seen
-            for img in "${HB_BUILT_IMAGES[@]}"; do
-                id="$(podman inspect --format='{{.Id}}' "$img" 2>/dev/null || echo "")"
-                [[ -n "$id" ]] || id="$img"
-                seen="false"
-                for d in "${processed_ids[@]}"; do
-                    [[ "$d" == "$id" ]] && seen="true" && break
-                done
-                [[ "$seen" == "true" ]] && continue
-                processed_ids+=("$id")
-                log_info "Post-build artifacts for image: $img"
-                ci_generate_and_attach_sbom "$img" || log_warn "SBOM generation/attachment failed for $img"
-                ci_generate_and_attach_vuln_report "$img" || log_warn "Vulnerability report generation/attachment failed for $img"
-            done
             if [[ "${REMOVE_LOCAL_IMAGES:-true}" == "true" ]]; then
                 log_info "Removing local images (REMOVE_LOCAL_IMAGES=true)"
                 remove_docker_images "${HB_BUILT_IMAGES[@]}"
@@ -284,22 +263,8 @@ main_build() {
         return $build_status
     fi
 
-    # Post-build operations (SBOM, vulnerability reports, cleanup)
+    # Post-build cleanup
     if [[ ${#CI_BUILT_IMAGES[@]} -gt 0 ]]; then
-        local primary_img="${CI_BUILT_IMAGES[0]}"
-        log_info "Primary image: $primary_img"
-
-        # Generate and attach SBOM + vulnerability report for every built image
-        local img
-        for img in "${CI_BUILT_IMAGES[@]}"; do
-            log_info "Post-build artifacts for image: $img"
-            ci_generate_and_attach_sbom "$img" || log_warn "SBOM generation/attachment failed for $img"
-            ci_generate_and_attach_vuln_report "$img" || log_warn "Vulnerability report generation/attachment failed for $img"
-        done
-
-        # Sign image
-        #sign_with_cosign "$primary_img"
-
         # Remove local images if requested
         if [[ "${REMOVE_LOCAL_IMAGES:-true}" == "true" ]]; then
             log_info "Removing local images (REMOVE_LOCAL_IMAGES=true)"
@@ -312,4 +277,3 @@ main_build() {
     log_success "Build pipeline completed successfully"
     return 0
 }
-

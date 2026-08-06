@@ -35,7 +35,7 @@ This repository provides three main categories of utilities:
 - **Kubernetes**: Operator Lifecycle Manager (OLM), operator bundles, catalog generation
 - **Security**: DISA STIG compliance, FIPS mode, OSCAP hardening
 - **Registries**: Multi-registry support (Docker Hub, Cloud Registry, GitHub Container Registry, AWS ECR, Quay.io)
-- **CI/CD**: Universal pipeline with SBOM generation, image signing, and artifact management
+- **CI/CD**: Universal pipeline with image signing and artifact management
 
 ---
 
