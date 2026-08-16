@@ -243,6 +243,15 @@ ci_hummingbird_generate() {
              "${hbgen}/ci" \
              "${hbgen}/.cache"
 
+    # Vendor SCAP datastreams into the build context so verify-compliance can
+    # read them via the /run/src bind mount during the builder stage. Only the
+    # hummingbird datastream is baked into the builder image; ubi distros get
+    # theirs from here.
+    if compgen -G "${HUMMINGBIRD_DIR}/oscap/*.xml" >/dev/null; then
+        mkdir -p "${hbgen}/images/${image_name}/oscap"
+        cp "${HUMMINGBIRD_DIR}"/oscap/*.xml "${hbgen}/images/${image_name}/oscap/"
+    fi
+
     # Image definition files
     cp "${image_dir}/properties.yml" "${hbgen}/images/${image_name}/properties.yml"
     cp "${image_dir}/Containerfile.j2" "${hbgen}/images/${image_name}/Containerfile.j2"
