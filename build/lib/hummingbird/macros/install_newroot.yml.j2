@@ -12,7 +12,9 @@ RUN case "${TARGETARCH}" in \
 {%- endfor %}
     esac
 {%- endif %}
-{%- if oscap.enabled | default(false) and distro == "hummingbird" and image_name != "hummingbird-builder" %}
+{%- if oscap.enabled | default(false)
+    and (distro == "hummingbird" or distro in oscap.get("datastreams", {}))
+    and image_name != "hummingbird-builder" %}
 {{ verify_compliance() }}
 {%- endif %}
 {% endmacro -%}

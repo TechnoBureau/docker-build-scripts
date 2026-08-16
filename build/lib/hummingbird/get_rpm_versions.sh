@@ -23,13 +23,16 @@ CACHE_FILE=".cache/rpm-versions.yml"
 mkdir -p .cache
 
 # Collect all string packages from every rpms.in.yaml (python3 avoids a yq dependency)
+# WHY: Distro-agnostic glob (images/<group>/<distro>/<variant>/rpms/rpms.in.yaml):
+# ubi builds (HB_DISTROS=ubi9) have no hummingbird trees, and all distros resolve
+# versions from the same builder-image repos.
 packages=$(python3 - <<'EOF'
 import pathlib
 import sys
 import yaml
 
 pkgs = set()
-for path in pathlib.Path("images").glob("*/hummingbird/*/rpms/rpms.in.yaml"):
+for path in pathlib.Path("images").glob("*/[!.]*/*/rpms/rpms.in.yaml"):
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     for item in data.get("packages", []):
         if isinstance(item, str):

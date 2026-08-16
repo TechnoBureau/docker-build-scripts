@@ -1,0 +1,31 @@
+# GPG checks are intentionally disabled for lockfile generation, following the
+# hummingbird.repo convention: a gpgcheck failure during lockfile updates is
+# silent and hard to debug, while a bad signature surfaces as a failed build.
+# Repo ids mirror the official UBI 10 /etc/yum.repos.d/ubi.repo entries; the
+# $basearch variable is resolved by dnf against the target architecture.
+[ubi-10-for-$basearch-baseos-rpms]
+name=Red Hat Universal Base Image 10 (RPMs) - BaseOS
+baseurl=https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi10/10/$basearch/baseos/os
+enabled=1
+sslverify=1
+gpgcheck=0
+priority=10
+zchunk=false
+
+[ubi-10-for-$basearch-appstream-rpms]
+name=Red Hat Universal Base Image 10 (RPMs) - AppStream
+baseurl=https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi10/10/$basearch/appstream/os
+enabled=1
+sslverify=1
+gpgcheck=0
+priority=10
+zchunk=false
+
+[codeready-builder-for-ubi-10-$basearch-rpms]
+name=Red Hat Universal Base Image 10 (RPMs) - CodeReady Builder
+baseurl=https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi10/10/$basearch/codeready-builder/os
+enabled=1
+sslverify=1
+gpgcheck=0
+priority=10
+zchunk=false

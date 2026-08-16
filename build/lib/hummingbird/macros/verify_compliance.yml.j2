@@ -1,6 +1,6 @@
 {%- macro verify_compliance() %}
 RUN verify-compliance ${NEWROOT} /run/src/{{ distro }}/{{ variant }} \
-        /usr/share/xml/scap/ssg/content/ssg-hummingbird-ds.xml
+        /usr/share/xml/scap/ssg/content/{{ oscap.get("datastreams", {}).get(distro, "ssg-hummingbird-ds.xml") }}
 {%- for profile in oscap.active_profiles %} \
         --{{ profile }}
 {%- endfor %}

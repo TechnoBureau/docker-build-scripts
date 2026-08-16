@@ -13,12 +13,18 @@
 #
 # Functions:
 #   ci_hummingbird_detect_flavor <dir>       -> prints 'hummingbird' | 'dockerfile' | ''
+#   ci_hummingbird_distros <image_dir>       -> prints distro names (one per line)
 #   ci_hummingbird_generate <image_dir>      -> renders variants into <image_dir>/.hbgen
 #   ci_hummingbird_variants <image_dir>      -> prints variant names (one per line)
-#   ci_hummingbird_configure <image_dir>     -> sets CONFIG for one variant
+#   ci_hummingbird_configure <image_dir> <distro> <variant>
+#                                            -> sets CONFIG for one distro/variant
 #   ci_hummingbird_build <image_dir>         -> runs the full hummingbird pipeline
 #
 # Environment:
+#   HB_DISTROS        Space/comma-separated distros to build, overriding the
+#                     default_distros in variables.yml (e.g. "ubi9", "hummingbird ubi9").
+#                     Without it, variables.yml default_distros applies (hummingbird
+#                     by default), so existing builds are unchanged.
 #   HUMMINGBIRD_DIR   Override vendored hummingbird/ location (default: build/lib/hummingbird)
 #
 
@@ -101,6 +107,87 @@ ci_hummingbird_find_image() {
 }
 
 # =============================================================================
+# ci_hummingbird_distros
+# Purpose:
+#   Resolve the distro list for an image. HB_DISTROS (env) wins; otherwise the
+#   image's distros (properties.yml "distros:" key) or default_distros from the
+#   merged variables.yml (shared builders/variables.yml deep-merged with the
+#   per-image variables.yml). Distros drive the generated tree layout
+#   images/<name>/<distro>/<variant>/. Defaults to hummingbird, so existing
+#   builds are unchanged without HB_DISTROS.
+# Input:
+#   $1 - image directory (must contain properties.yml)
+# Output:
+#   Prints distro names (one per line); warns when a distro has no repo entry
+#   in variables.yml default_variant_repos (generate_rpms_in falls back to
+#   default_variant_repos.default / additional_repos)
+# =============================================================================
+ci_hummingbird_distros() {
+    local image_dir="${1:?missing image directory}"
+
+    if [[ -n "${HB_DISTROS:-}" ]]; then
+        local d
+        for d in ${HB_DISTROS//,/ }; do
+            [[ -n "${d}" ]] && echo "${d}"
+        done
+        return 0
+    fi
+
+    local repo_vars=""
+    if [[ -n "${BUILDERS_DIR:-}" ]]; then
+        repo_vars="${BUILDERS_DIR}/variables.yml"
+    fi
+    local builder_vars="${image_dir}/variables.yml"
+    local vars_base=""
+    if [[ -f "${repo_vars}" ]]; then
+        vars_base="${repo_vars}"
+    elif [[ -f "${builder_vars}" ]]; then
+        vars_base="${builder_vars}"
+    else
+        log_error "No variables.yml for $(basename "${image_dir}"): create ${builder_vars} (per-image overrides) or ${repo_vars:-<builders>/variables.yml} (shared defaults)"
+        return 1
+    fi
+
+    python3 - "${vars_base}" "${builder_vars}" "${image_dir}/properties.yml" <<'PY'
+import os
+import sys
+
+import yaml
+
+base_file, overlay_file, props_file = sys.argv[1], sys.argv[2], sys.argv[3]
+base = yaml.safe_load(open(base_file, encoding="utf-8")) or {}
+if overlay_file != base_file and os.path.exists(overlay_file):
+    overlay = yaml.safe_load(open(overlay_file, encoding="utf-8")) or {}
+
+    def merge(dst, src):
+        for key, value in src.items():
+            if isinstance(value, dict) and isinstance(dst.get(key), dict):
+                merge(dst[key], value)
+            else:
+                dst[key] = value
+        return dst
+
+    base = merge(base, overlay)
+
+props = yaml.safe_load(open(props_file, encoding="utf-8")) or {}
+distros = props.get("distros") or base.get("default_distros") or ["hummingbird"]
+
+# Warn when a distro has no repo file mapping: generate_rpms_in falls back to
+# default_variant_repos.default or the image's additional_repos, and the build
+# itself resolves packages from the builder image's baked-in repos.
+known_repos = base.get("default_variant_repos", {})
+for distro in distros:
+    if distro not in known_repos and "default" not in known_repos and not props.get("additional_repos"):
+        print(
+            f"warning: no default_variant_repos entry for distro '{distro}' "
+            f"in variables.yml; rpms.in.yaml will reference no yum repo files",
+            file=sys.stderr,
+        )
+print("\n".join(str(d) for d in distros))
+PY
+}
+
+# =============================================================================
 # ci_hummingbird_variants
 # Purpose:
 #   Resolve the variant list for an image from its properties.json cache
@@ -143,9 +230,16 @@ ci_hummingbird_generate() {
     local image_name
     image_name="$(basename "${image_dir}")"
 
+    # Resolve distros up front: every generated tree (rpms, VERSION, TAGS,
+    # Containerfile, oscap-tailoring) is created per distro so the same image
+    # definition can produce e.g. hummingbird and ubi9 variants.
+    local distros
+    distros="$(ci_hummingbird_distros "${image_dir}")" || return 1
+    log_info "Generating for distro(s): $(tr '\n' ' ' <<< "${distros}")"
+
     local hbgen="${image_dir}/.hbgen"
     rm -rf "${hbgen}"
-    mkdir -p "${hbgen}/images/${image_name}/hummingbird" \
+    mkdir -p "${hbgen}/images/${image_name}" \
              "${hbgen}/ci" \
              "${hbgen}/.cache"
 
@@ -232,21 +326,25 @@ PY
         return 1
     }
 
-    # 2. Generate rpms.in.yaml per variant (get_rpm_versions.sh needs these)
+    # 2. Generate rpms.in.yaml per distro/variant (get_rpm_versions.sh needs these)
     local variant
     local variants
     variants="$(ci_hummingbird_variants "${image_dir}")" || return 1
-    while IFS= read -r variant; do
-        [[ -n "${variant}" ]] || continue
-        local vdir="${hbgen_dir}/hummingbird/${variant}"
-        mkdir -p "${vdir}/rpms"
+    local distro
+    while IFS= read -r distro; do
+        [[ -n "${distro}" ]] || continue
+        while IFS= read -r variant; do
+            [[ -n "${variant}" ]] || continue
+            local vdir="${hbgen_dir}/${distro}/${variant}"
+            mkdir -p "${vdir}/rpms"
 
-        ( cd "${hbgen}" && python3 "${HUMMINGBIRD_DIR}/generate_rpms_in.py" \
-            "images/${image_name}/hummingbird/${variant}/rpms/rpms.in.yaml" ) || {
-            log_error "generate_rpms_in.py failed for ${image_name}/${variant}"
-            return 1
-        }
-    done <<< "${variants}"
+            ( cd "${hbgen}" && python3 "${HUMMINGBIRD_DIR}/generate_rpms_in.py" \
+                "images/${image_name}/${distro}/${variant}/rpms/rpms.in.yaml" ) || {
+                log_error "generate_rpms_in.py failed for ${image_name}/${distro}/${variant}"
+                return 1
+            }
+        done <<< "${variants}"
+    done <<< "${distros}"
 
     # 3. Resolve RPM versions (needed for the VERSION file and any tag using
     # a package version macro; always resolved so latest-only images get a
@@ -260,47 +358,50 @@ PY
         return 1
     }
 
-    # 4. Render per variant
-    while IFS= read -r variant; do
-        [[ -n "${variant}" ]] || continue
-        local vdir="${hbgen_dir}/hummingbird/${variant}"
+    # 4. Render per distro/variant
+    while IFS= read -r distro; do
+        [[ -n "${distro}" ]] || continue
+        while IFS= read -r variant; do
+            [[ -n "${variant}" ]] || continue
+            local vdir="${hbgen_dir}/${distro}/${variant}"
 
-        local template
-        local rendered
-        for template in templates/VERSION.j2 templates/TAGS.j2 templates/oscap-tailoring.xml.j2; do
-            case "${template}" in
-                *VERSION.j2) rendered="images/${image_name}/hummingbird/${variant}/VERSION" ;;
-                *TAGS.j2)    rendered="images/${image_name}/hummingbird/${variant}/TAGS" ;;
-                *)           rendered="images/${image_name}/hummingbird/${variant}/oscap-tailoring.xml" ;;
-            esac
+            local template
+            local rendered
+            for template in templates/VERSION.j2 templates/TAGS.j2 templates/oscap-tailoring.xml.j2; do
+                case "${template}" in
+                    *VERSION.j2) rendered="images/${image_name}/${distro}/${variant}/VERSION" ;;
+                    *TAGS.j2)    rendered="images/${image_name}/${distro}/${variant}/TAGS" ;;
+                    *)           rendered="images/${image_name}/${distro}/${variant}/oscap-tailoring.xml" ;;
+                esac
+                ( cd "${hbgen}" && python3 "${HUMMINGBIRD_DIR}/generate_jinja2.py" \
+                    "${template}" "${rendered}" ) || {
+                    log_error "generate_jinja2.py failed rendering ${template} for ${image_name}/${distro}/${variant}"
+                    return 1
+                }
+            done
+
+            # 5. Render the Containerfile
             ( cd "${hbgen}" && python3 "${HUMMINGBIRD_DIR}/generate_jinja2.py" \
-                "${template}" "${rendered}" ) || {
-                log_error "generate_jinja2.py failed rendering ${template} for ${image_name}/${variant}"
+                "images/${image_name}/Containerfile.j2" \
+                "images/${image_name}/${distro}/${variant}/Containerfile" ) || {
+                log_error "Containerfile render failed for ${image_name}/${distro}/${variant}"
                 return 1
             }
-        done
 
-        # 5. Render the Containerfile
-        ( cd "${hbgen}" && python3 "${HUMMINGBIRD_DIR}/generate_jinja2.py" \
-            "images/${image_name}/Containerfile.j2" \
-            "images/${image_name}/hummingbird/${variant}/Containerfile" ) || {
-            log_error "Containerfile render failed for ${image_name}/${variant}"
-            return 1
-        }
-
-        # 6. Rewrite FROM oci-archive to an absolute path inside the work tree
-        #    (ci_build_and_push cannot pushd; buildah resolves the archive
-        #    relative to CWD). chunkah writes /run/src/out.ociarchive which is
-        #    the build context (= hbgen_dir) via the bind mount.
-        #    WHY: Use portable sed -i.bak + rm to support both GNU sed (Linux)
-        #    and BSD sed (macOS); 'sed -i ""' works only on macOS.
-        local containerfile="${vdir}/Containerfile"
-        if grep -q '^FROM oci-archive:' "${containerfile}"; then
-            sed -i.bak "s|^FROM oci-archive:.*|FROM oci-archive:${hbgen_dir}/out.ociarchive|" "${containerfile}"
-            rm -f "${containerfile}.bak"
-        fi
-        log_info "Rendered hummingbird variant: ${image_name}/${variant}"
-    done <<< "${variants}"
+            # 6. Rewrite FROM oci-archive to an absolute path inside the work tree
+            #    (ci_build_and_push cannot pushd; buildah resolves the archive
+            #    relative to CWD). chunkah writes /run/src/out.ociarchive which is
+            #    the build context (= hbgen_dir) via the bind mount.
+            #    WHY: Use portable sed -i.bak + rm to support both GNU sed (Linux)
+            #    and BSD sed (macOS); 'sed -i ""' works only on macOS.
+            local containerfile="${vdir}/Containerfile"
+            if grep -q '^FROM oci-archive:' "${containerfile}"; then
+                sed -i.bak "s|^FROM oci-archive:.*|FROM oci-archive:${hbgen_dir}/out.ociarchive|" "${containerfile}"
+                rm -f "${containerfile}.bak"
+            fi
+            log_info "Rendered hummingbird variant: ${image_name}/${distro}/${variant}"
+        done <<< "${variants}"
+    done <<< "${distros}"
 
     return 0
 }
@@ -308,22 +409,24 @@ PY
 # =============================================================================
 # ci_hummingbird_configure
 # Purpose:
-#   Populate CONFIG for one variant build (image name, version, custom tags,
-#   registries, chunkah flag)
+#   Populate CONFIG for one distro/variant build (image name, version, custom
+#   tags, registries, chunkah flag)
 # Input:
 #   $1 - image directory
-#   $2 - variant name
+#   $2 - distro name
+#   $3 - variant name
 # Returns:
 #   0 on success, non-zero when variant files are missing
 # =============================================================================
 ci_hummingbird_configure() {
     local image_dir="${1:?missing image directory}"
-    local variant="${2:?missing variant}"
+    local distro="${2:?missing distro}"
+    local variant="${3:?missing variant}"
     local image_base_name
     image_base_name="$(basename "${image_dir}")"
 
-    local vdir="${image_dir}/.hbgen/images/${image_base_name}/hummingbird/${variant}"
-    [[ -f "${vdir}/Containerfile" ]] || { log_error "No rendered Containerfile for ${image_base_name}/${variant}"; return 1; }
+    local vdir="${image_dir}/.hbgen/images/${image_base_name}/${distro}/${variant}"
+    [[ -f "${vdir}/Containerfile" ]] || { log_error "No rendered Containerfile for ${image_base_name}/${distro}/${variant}"; return 1; }
 
     # Image name follows the canonical hummingbird convention (-builder suffix)
     if [[ "${variant}" == "builder" ]]; then
@@ -453,7 +556,7 @@ PY
     CONFIG[CHUNKAH]="true"
 
     local registry_summary="${registry_list:-$(IFS=,; echo "${reg_entries[*]}")}"
-    log_info "Hummingbird config: image=${CONFIG[IMAGE_NAME]} version=${CONFIG[VERSION]} tags='${CONFIG[CUSTOM_TAGS]:-}' registries=${registry_summary} platforms=${platforms:-native} skip_push=${skip_push}"
+    log_info "Hummingbird config: image=${CONFIG[IMAGE_NAME]} distro=${distro} version=${CONFIG[VERSION]} tags='${CONFIG[CUSTOM_TAGS]:-}' registries=${registry_summary} platforms=${platforms:-native} skip_push=${skip_push}"
     return 0
 }
 
@@ -487,7 +590,8 @@ PY
 # =============================================================================
 # ci_hummingbird_build
 # Purpose:
-#   Full hummingbird pipeline: pre-select variants, generate, then build each
+#   Full hummingbird pipeline: pre-select distros/variants, generate, then
+#   build each distro/variant
 # Input:
 #   $1 - image directory (with properties.yml + Containerfile.j2)
 # Returns:
@@ -500,8 +604,12 @@ ci_hummingbird_build() {
         return 1
     }
 
-    # WHY: Read and filter variants BEFORE expensive generation so invalid
-    # HB_VARIANTS names are caught early and only selected variants are built.
+    # WHY: Read and filter distros/variants BEFORE expensive generation so
+    # invalid HB_DISTROS/HB_VARIANTS names are caught early and only selected
+    # combinations are built.
+    local distros
+    distros="$(ci_hummingbird_distros "${image_dir}")" || return 1
+
     local variants
     variants="$(ci_hummingbird_read_variants "${image_dir}")" || return 1
 
@@ -524,7 +632,8 @@ ci_hummingbird_build() {
         log_info "Building variants (HB_VARIANTS): ${selected[*]}"
     fi
 
-    # Generate the work tree for all variants (generation is not per-variant)
+    # Generate the work tree for all distro/variants (generation is not
+    # per-distro/variant)
     ci_hummingbird_generate "${image_dir}" || return 1
 
     # WHY: ci_build_and_push resets CI_BUILT_IMAGES per variant, so accumulate
@@ -532,23 +641,26 @@ ci_hummingbird_build() {
     declare -ga HB_BUILT_IMAGES 2>/dev/null || true
     HB_BUILT_IMAGES=()
 
-    local variant
-    while IFS= read -r variant; do
-        [[ -n "${variant}" ]] || continue
-        log_info "=== Building hummingbird variant: ${variant} ==="
+    local distro variant
+    while IFS= read -r distro; do
+        [[ -n "${distro}" ]] || continue
+        while IFS= read -r variant; do
+            [[ -n "${variant}" ]] || continue
+            log_info "=== Building hummingbird variant: ${distro}/${variant} ==="
 
-        ci_hummingbird_configure "${image_dir}" "${variant}" || return 1
+            ci_hummingbird_configure "${image_dir}" "${distro}" "${variant}" || return 1
 
-        local vdir image_base
-        vdir="${image_dir}/.hbgen/images/$(basename "${image_dir}")/hummingbird/${variant}"
-        image_base="$(basename "${image_dir}")"
-        ci_build_and_push "${vdir}/Containerfile" "${image_dir}/.hbgen/images/${image_base}" || {
-            log_error "Build failed for ${CONFIG[IMAGE_NAME]} (variant: ${variant})"
-            return 1
-        }
-        HB_BUILT_IMAGES+=("${CI_BUILT_IMAGES[@]}")
-        log_success "Built hummingbird variant: ${CONFIG[IMAGE_NAME]}"
-    done <<< "${variants}"
+            local vdir image_base
+            image_base="$(basename "${image_dir}")"
+            vdir="${image_dir}/.hbgen/images/${image_base}/${distro}/${variant}"
+            ci_build_and_push "${vdir}/Containerfile" "${image_dir}/.hbgen/images/${image_base}" || {
+                log_error "Build failed for ${CONFIG[IMAGE_NAME]} (distro: ${distro}, variant: ${variant})"
+                return 1
+            }
+            HB_BUILT_IMAGES+=("${CI_BUILT_IMAGES[@]}")
+            log_success "Built hummingbird variant: ${CONFIG[IMAGE_NAME]} (${distro}/${variant})"
+        done <<< "${variants}"
+    done <<< "${distros}"
 
     return 0
 }
