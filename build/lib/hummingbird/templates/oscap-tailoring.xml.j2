@@ -7,12 +7,15 @@
 {%- for profile_name in oscap.active_profiles %}
   <xccdf-1.2:Profile id="xccdf_hummingbird_profile_{{ profile_name }}_container_build" extends="xccdf_org.ssgproject.content_profile_{{ profile_name }}">
     <xccdf-1.2:title>{{ profile_name | upper }} (container build)</xccdf-1.2:title>
-{%- if oscap.crypto_policy is defined and profile_name == "stig" %}
+{%- if profile_name == "stig" %}
+{%- set _cp = oscap.get("crypto_policy_variants", {}).get(variant, oscap.get("crypto_policy", "")) %}
+{%- if _cp %}
     {#- WHY: check-export value binding for var_system_crypto_policy does not
         survive tailoring extends in offline scans (rule fails despite correct
-        content); pin it explicitly. Gated on oscap.crypto_policy so images
+        content); pin it explicitly. Empty when unconfigured, so images
         without it (hummingbird) render unchanged. #}
-    <xccdf-1.2:set-value idref="xccdf_org.ssgproject.content_value_var_system_crypto_policy">{{ oscap.crypto_policy }}</xccdf-1.2:set-value>
+    <xccdf-1.2:set-value idref="xccdf_org.ssgproject.content_value_var_system_crypto_policy">{{ _cp }}</xccdf-1.2:set-value>
+{%- endif %}
 {%- endif %}
 {%- for rule in oscap.profile_exclude_rules[profile_name] %}
     <xccdf-1.2:select idref="{{ rule.id }}" selected="false">

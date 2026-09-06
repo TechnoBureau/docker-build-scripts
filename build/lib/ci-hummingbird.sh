@@ -635,14 +635,22 @@ ci_hummingbird_build() {
         return 1
     }
 
-    # WHY: Read and filter distros/variants BEFORE expensive generation so
-    # invalid HB_DISTROS/HB_VARIANTS names are caught early and only selected
-    # combinations are built.
+    # WHY: Read and filter distros BEFORE expensive generation so invalid
+    # HB_DISTROS names are caught early.
     local distros
     distros="$(ci_hummingbird_distros "${image_dir}")" || return 1
 
+    # Generate the work tree for all distro/variants (generation is not
+    # per-distro/variant)
+    ci_hummingbird_generate "${image_dir}" || return 1
+
+    # WHY: Read variants from the cache AFTER generation: aggregate_properties
+    # computes the authoritative list (properties.yml variants plus
+    # additional_variants), which ci_hummingbird_read_variants cannot see.
+    # HB_VARIANTS is validated against it here (post-generate instead of
+    # pre-generate so additional variants like "fips" resolve).
     local variants
-    variants="$(ci_hummingbird_read_variants "${image_dir}")" || return 1
+    variants="$(ci_hummingbird_variants "${image_dir}")" || return 1
 
     if [[ -n "${HB_VARIANTS:-}" ]]; then
         local -a all_variants selected=()
@@ -662,10 +670,6 @@ ci_hummingbird_build() {
         variants="$(printf '%s\n' "${selected[@]}")"
         log_info "Building variants (HB_VARIANTS): ${selected[*]}"
     fi
-
-    # Generate the work tree for all distro/variants (generation is not
-    # per-distro/variant)
-    ci_hummingbird_generate "${image_dir}" || return 1
 
     # WHY: ci_build_and_push resets CI_BUILT_IMAGES per variant, so accumulate
     # the images of every variant here for the driver-level post-build loop

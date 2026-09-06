@@ -121,6 +121,11 @@ def _load_image_properties(
     distro_variants = _compute_distro_variants(distros, variants, variant_distros)
     # Remove additional_variants from output (consumed into variants)
     image_props.pop("additional_variants", None)
+    # WHY: the computed "variants" above must win: image_props still holds the
+    # raw properties.yml "variants" key, which would overwrite the computed
+    # list (base + additional_variants) in the merge below and silently drop
+    # additional variants like "fips".
+    image_props.pop("variants", None)
     return {
         "image_directory": str(properties_file.parent.relative_to(base_dir)),
         "image_group": properties_file.parent.name,

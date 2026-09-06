@@ -1,16 +1,35 @@
 {%- macro install_newroot() -%}
 RUN test -n "${MAIN_PACKAGES}" || (echo ">>>>> MAIN_PACKAGES not set <<<<<" && false)
 
-RUN dnf-installroot ${NEWROOT} ${DNF_FLAGS} install ${MAIN_PACKAGES}
+RUN --mount=type=cache,target=${DNF_CACHE} \
+    dnf-installroot ${NEWROOT} ${DNF_FLAGS} install ${MAIN_PACKAGES}
 {%- if arch_specific_packages is defined and arch_specific_packages %}
 
 # Install arch-specific packages based on TARGETARCH
-RUN case "${TARGETARCH}" in \
+RUN --mount=type=cache,target=${DNF_CACHE} \
+    case "${TARGETARCH}" in \
 {%- for arch, pkgs in arch_specific_packages | dictsort %}
     {{ arch | replace("x86_64", "amd64") | replace("aarch64", "arm64") }}) \
         dnf-installroot ${NEWROOT} ${DNF_FLAGS} install {{ pkgs | join(' ') }} ;; \
 {%- endfor %}
     esac
+{%- endif %}
+{%- set _cp = oscap.get("crypto_policy_variants", {}).get(variant, oscap.get("crypto_policy", "")) if oscap is defined else "" %}
+{%- if _cp and _cp != "DEFAULT" %}
+# Apply a non-DEFAULT system crypto policy without executing newroot binaries:
+# chroot breaks under emulation (rosetta/qemu), so replicate what
+# update-crypto-policies --set does: pin config+state and repoint backend
+# symlinks at the policy definitions shipped by crypto-policies. The value
+# mirrors the STIG set-value resolved the same way (variant pin wins).
+RUN _pol="{{ _cp }}"; \
+    printf '%s\n' "$_pol" > "${NEWROOT}/etc/crypto-policies/config"; \
+    printf '%s\n' "$_pol" > "${NEWROOT}/etc/crypto-policies/state/current"; \
+    for _f in "${NEWROOT}"/etc/crypto-policies/back-ends/*.config; do \
+      _t=$(readlink "$_f") || continue; \
+      case "$_t" in */DEFAULT/*) ;; *) continue;; esac; \
+      _n=$(printf '%s' "$_t" | sed "s|/DEFAULT/|/${_pol}/|"); \
+      if [ -e "${NEWROOT}${_n}" ]; then ln -sfn "$_n" "$_f"; fi; \
+    done
 {%- endif %}
 {%- if oscap.enabled | default(false)
     and (distro == "hummingbird" or distro in oscap.get("datastreams", {}))

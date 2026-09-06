@@ -69,9 +69,11 @@ RUN mkdir -p ${NEWROOT}/etc/dnf/libdnf5.conf.d && \
 {%- if rpm_packages is defined and rpm_packages['build-deps'] is defined and rpm_packages['build-deps'] %}
 # Install build dependencies in the builder layer
 {%- if distro == "hummingbird" %}
-RUN dnf install -y ${BUILD_PACKAGES}
+RUN --mount=type=cache,target=${DNF_CACHE} \
+    dnf install -y ${BUILD_PACKAGES}
 {%- else %}
-RUN dnf install -y --disablerepo=public-hummingbird* ${BUILD_PACKAGES}
+RUN --mount=type=cache,target=${DNF_CACHE} \
+    dnf install -y --disablerepo=public-hummingbird* ${BUILD_PACKAGES}
 {%- endif %}
 {%- endif %}
 
@@ -82,6 +84,10 @@ RUN rpmkeys --import /etc/pki/rpm-gpg/RPM-GPG-KEY-hummingbird-release --root "${
 
 # Install filesystem early, so that early container setup works
 # It gets pulled in later by glibc anyway, so no additional dependency
-RUN dnf-installroot ${NEWROOT} ${DNF_FLAGS} install filesystem
+# WHY cache mount: DNF_FLAGS points cachedir/logdir/varsdir at DNF_CACHE;
+# persisting it across builds skips re-downloads without changing semantics
+# (per-repo caches are arch-aware; image content is untouched).
+RUN --mount=type=cache,target=${DNF_CACHE} \
+    dnf-installroot ${NEWROOT} ${DNF_FLAGS} install filesystem
 
 {% endmacro -%}
