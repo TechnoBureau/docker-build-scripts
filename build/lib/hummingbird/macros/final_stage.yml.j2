@@ -1,20 +1,26 @@
 {%- macro final_stage() -%}
+{%- if chunkah_enabled %}
+# Optional Podman/Buildah assembly. The engine disables layer-cache replay here:
+# an archive written through a bind mount is not a cached layer output.
 RUN --mount=type=bind,target=/run/src,rw \
     chunkah build --rootfs ${NEWROOT} --max-layers 32 > /run/src/out.ociarchive
 
 FROM oci-archive:out.ociarchive
+{%- else %}
+# Portable default: a real stage dependency, with no shared per-arch archive.
+FROM scratch
+ARG NEWROOT=/new-root-fs
+COPY --from=builder ${NEWROOT}/ /
+{%- endif %}
 
 {%- if tags is defined %}
-
 {{ inject_source_info_labels() }}
 {{- image_metadata_labels() }}
-{% endif %}
+{%- endif %}
 {%- if container_user is defined and container_user == "default" %}
-
-# ensure writable HOME and default directory for unprivileged user
 ENV HOME=/tmp
 WORKDIR /tmp
-{%- if variant == "builder" %}
+{%- if is_builder %}
 ENV CONTAINER_DEFAULT_USER={{ default_user }}
 {%- endif %}
 {%- endif -%}

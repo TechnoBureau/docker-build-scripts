@@ -26,10 +26,58 @@ if [[ -z "${CI_CORE_LOADED:-}" ]]; then
 fi
 
 
-# Define Safe Regex Patterns for Input Validation (Security)
+# Regex patterns for validating image references.
+# WHY kept although nothing in this repo calls them yet: they are readonly
+# globals, so a consumer repository may already source them; removing them
+# would break that contract. Note REGEX_IMAGE_NAME deliberately excludes ':' -
+# it matches a bare repository name, NOT a tagged reference, so validate refs
+# with ci_validate_image_ref() below rather than applying it directly.
+# shellcheck disable=SC2034
 readonly REGEX_IMAGE_NAME="^[a-zA-Z0-9/_.-]+$"
+# shellcheck disable=SC2034
 readonly REGEX_URL="^[a-zA-Z0-9/._:-]+$"
+# shellcheck disable=SC2034
 readonly REGEX_TAG="^[a-zA-Z0-9._-]+$"
+
+# =============================================================================
+# ci_validate_image_ref
+# Purpose:
+#   Check that a reference is "<repo>[:<tag>]" with both parts well formed.
+# Input:
+#   $1 - image reference, e.g. us.icr.io/ns/curl:8.21.0
+# Output:
+#   Nothing on success; an explanatory log_error on failure
+# Returns:
+#   0 if the reference is usable, 1 otherwise
+# WHY:
+#   Opt-in guard for callers that take refs from config or environment. It is
+#   deliberately NOT wired into remove_docker_images/sign_with_cosign: those
+#   already quote their arguments, and rejecting a ref there would turn a
+#   warning into a hard failure for consumers.
+# =============================================================================
+ci_validate_image_ref() {
+    local ref="${1:-}"
+    local name tag
+
+    if [[ -z "$ref" ]]; then
+        log_error "ci_validate_image_ref: empty image reference"
+        return 1
+    fi
+
+    name="${ref%%:*}"
+    tag="${ref#*:}"
+    [[ "$tag" == "$ref" ]] && tag=""
+
+    if [[ ! "$name" =~ $REGEX_IMAGE_NAME ]]; then
+        log_error "ci_validate_image_ref: invalid repository name in '$ref'"
+        return 1
+    fi
+    if [[ -n "$tag" && ! "$tag" =~ $REGEX_TAG ]]; then
+        log_error "ci_validate_image_ref: invalid tag in '$ref'"
+        return 1
+    fi
+    return 0
+}
 
 # =============================================================================
 # sign_with_cosign

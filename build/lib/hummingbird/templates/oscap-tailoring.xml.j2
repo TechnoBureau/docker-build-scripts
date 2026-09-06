@@ -1,19 +1,18 @@
-{%- if oscap.enabled | default(false) and oscap.has_tailoring | default(false) -%}
+{%- if oscap.enabled and oscap.has_tailoring -%}
 <?xml version="1.0" encoding="UTF-8"?>
 <xccdf-1.2:Tailoring xmlns:xccdf-1.2="http://checklists.nist.gov/xccdf/1.2" id="xccdf_hummingbird_tailoring_container-build">
-  <xccdf-1.2:benchmark href="ssg-hummingbird-ds.xml"/>
+  <xccdf-1.2:benchmark href="{{ oscap.datastreams.get(distro, "ssg-hummingbird-ds.xml") }}"/>
   {#- Frozen timestamp for reproducible builds — not a creation date #}
   <xccdf-1.2:version time="2026-01-01T00:00:00">1</xccdf-1.2:version>
 {%- for profile_name in oscap.active_profiles %}
   <xccdf-1.2:Profile id="xccdf_hummingbird_profile_{{ profile_name }}_container_build" extends="xccdf_org.ssgproject.content_profile_{{ profile_name }}">
     <xccdf-1.2:title>{{ profile_name | upper }} (container build)</xccdf-1.2:title>
 {%- if profile_name == "stig" %}
-{%- set _cp = oscap.get("crypto_policy_variants", {}).get(variant, oscap.get("crypto_policy", "")) %}
+{%- set _cp = oscap.crypto_policy_variants.get(variant, oscap.crypto_policy) %}
 {%- if _cp %}
     {#- WHY: check-export value binding for var_system_crypto_policy does not
         survive tailoring extends in offline scans (rule fails despite correct
-        content); pin it explicitly. Empty when unconfigured, so images
-        without it (hummingbird) render unchanged. #}
+        content); pin it explicitly. This is the same resolved policy the rootfs helper installs. #}
     <xccdf-1.2:set-value idref="xccdf_org.ssgproject.content_value_var_system_crypto_policy">{{ _cp }}</xccdf-1.2:set-value>
 {%- endif %}
 {%- endif %}

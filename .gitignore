@@ -1,1 +1,9 @@
 .hbgen/
+__pycache__/
+*.pyc
+
+# Local multi-platform OCI output when Docker is used without pushing.
+.ci-output/
+
+# Local Python dependency environment.
+.venv/

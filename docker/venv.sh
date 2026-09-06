@@ -66,7 +66,9 @@ create_symlink() {
         return 1
     else
         # Use absolute paths to avoid "File name too long" errors
-        local target_path="$(realpath "$target" 2>/dev/null || echo "$target")"
+        # WHY split: `local x=$(...)` always returns 0, hiding realpath's failure
+        local target_path
+        target_path="$(realpath "$target" 2>/dev/null || echo "$target")"
         ln -sf "$target_path" "$link_name" 2>/dev/null && {
             log_info "Created symlink: $(basename "$link_name") -> $(basename "$target_path")" >&2
             return 0
@@ -113,10 +115,9 @@ install_rhel_packages() {
 
 # ========= PYTHON DETECTION =========
 detect_or_install_python() {
-    local min_major="${MIN_PYTHON_VERSION%%.*}"
-    local min_minor="${MIN_PYTHON_VERSION#*.}"
-    min_minor="${min_minor%%.*}"
-
+    # WHY no major/minor split here: version_compare() takes the full
+    # "major.minor.micro" strings, so decomposing MIN_PYTHON_VERSION was dead
+    # work (and the two locals were never read).
     log_info "Searching for Python ${MIN_PYTHON_VERSION}+..." >&2
 
     local python_candidates=("python3.20" "python3.19" "python3.18" "python3.17" "python3.16" "python3.15" "python3.14" "python3.13" "python3.12" "python3" "python")
@@ -166,7 +167,10 @@ detect_or_install_python() {
 # ========= PYTHON INSTALLATION =========
 install_python_from_source() {
     local original_dir="$PWD"
-    local temp_dir=$(mktemp -d)
+    # WHY split: see create_symlink - `local x=$(...)` masks mktemp's failure,
+    # which would leave cleanup_python_install rm -rf'ing an empty path.
+    local temp_dir
+    temp_dir=$(mktemp -d)
 
     # Cleanup function to ensure we return to original directory and remove temp
     cleanup_python_install() {

@@ -1,0 +1,50 @@
+# Shared defaults for every builder in this fixture tree.
+# Mirrors the real builders/variables.yml contract: distros, variants, repos,
+# labels, default packages and the oscap compliance policy.
+default_distros:
+  - hummingbird
+default_variants:
+  - default
+  - builder
+
+registry: ghcr.io/technobureau
+default_user: "1001"
+
+labels:
+  maintainer: Technobureau
+  vendor: Technobureau
+  source_url: https://github.com/TechnoBureau/docker-build-scripts
+
+variant_descriptions:
+  default: Base runtime image
+  builder: Image with build tooling
+
+default_rpm_packages:
+  all:
+    - filesystem
+  builder:
+    - gcc
+    - make
+
+default_variant_repos:
+  hummingbird:
+    - hummingbird.repo
+  ubi9:
+    - ubi9.repo
+  default:
+    - hummingbird.repo
+
+# Compliance is enabled globally; the curl builder narrows it further in its own
+# properties.yml (which is why both files are merged, not one or the other).
+oscap:
+  enabled: true
+  profiles:
+    stig: true
+  exclude_rules:
+    - id: xccdf_org.ssgproject.content_rule_no_example_rule
+      reason: kept for the tailoring regression test
+      profiles:
+        - stig
+
+# Keep the legacy version-query count stable; multi-arch has a separate suite.
+platforms: [linux/amd64]

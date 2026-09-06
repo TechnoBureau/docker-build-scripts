@@ -146,10 +146,9 @@ main() {
 
   # === Install .so files ===
   log "Installing modules..."
-  > "$CONF_FILE"  # Clear config
+  : > "$CONF_FILE"  # Clear config
 
-  declare -A installed_modules
-
+  
   for file in glibc-*.so; do
     [[ -f "$file" ]] || continue
 
@@ -181,8 +180,6 @@ main() {
       echo "load_module $RUNTIME_PATH;" >> "$CONF_FILE"
       log "Added to config: load_module $RUNTIME_PATH;"
     fi
-
-    installed_modules["$CLEAN_NAME"]=1
   done
 
   # === Final check ===

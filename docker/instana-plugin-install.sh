@@ -67,9 +67,8 @@ fi
 
 # === Process and move .so files ===
 echo "Processing .so files..."
-> "$CONF_FILE"  # Clear existing conf file
+: > "$CONF_FILE"  # Clear existing conf file
 
-declare -A seen_modules
 
 for file in glibc-*.so; do
   [[ -f "$file" ]] || continue

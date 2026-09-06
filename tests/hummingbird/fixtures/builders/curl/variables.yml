@@ -1,0 +1,10 @@
+# Per-image overlay for the curl builder.
+# Deep-merged over builders/variables.yml with LIST_POLICY_REPLACE, so
+# default_distros here selects ubi9 *instead of* adding to the shared list.
+default_distros:
+  - hummingbird
+  - ubi9
+
+# Proves the overlay merge: this key does not exist in the shared file and must
+# survive into .hbgen/images/variables.yml.
+curl_overlay_marker: overlay-applied
