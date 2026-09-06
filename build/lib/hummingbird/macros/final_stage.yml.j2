@@ -14,7 +14,8 @@ FROM oci-archive:out.ociarchive
 # ensure writable HOME and default directory for unprivileged user
 ENV HOME=/tmp
 WORKDIR /tmp
-{%- if variant == "builder" %}
+{#- is_builder (hb_variant) also matches composite variants such as "fips-builder" -#}
+{%- if is_builder %}
 ENV CONTAINER_DEFAULT_USER={{ default_user }}
 {%- endif %}
 {%- endif -%}

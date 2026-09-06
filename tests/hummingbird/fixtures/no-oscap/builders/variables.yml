@@ -1,0 +1,16 @@
+# Minimal shared config: deliberately has NO oscap section and NO
+# default_variant_repos, to cover the two "absent key" code paths.
+default_distros:
+  - hummingbird
+default_variants:
+  - default
+
+registry: ghcr.io/technobureau
+default_user: "1001"
+
+variant_descriptions:
+  default: Base runtime image
+
+default_rpm_packages:
+  all:
+    - filesystem

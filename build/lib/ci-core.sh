@@ -24,16 +24,25 @@
 #   detect_container_engine
 #
 
-# Mark as loaded to prevent circular sourcing
+# Mark as loaded to prevent circular sourcing.
+# WHY shellcheck disable on this block: every name below is part of the
+# library's public contract - other ci-*.sh files and consumer repositories
+# read or populate them. Analysed file-by-file, shellcheck cannot see those
+# readers and reports SC2034 for each one.
+# shellcheck disable=SC2034
 CI_CORE_LOADED=true
 #IFS=$'\n\t'
 
 # global arrays (caller may rely on these)
+# shellcheck disable=SC2034
 declare -gA CONFIG 2>/dev/null || true
 declare -ga CI_TEMP_FILES=() 2>/dev/null || true
 declare -ga CI_TEMP_DIRS=() 2>/dev/null || true
+# shellcheck disable=SC2034  # populated by build_registries_array, read by ci-build.sh
 declare -ga REGISTRIES=() 2>/dev/null || true
+# shellcheck disable=SC2034  # populated by ci_build_and_push, read by the flavours
 declare -ga CI_BUILT_IMAGES=() 2>/dev/null || true
+# shellcheck disable=SC2034  # consumer-facing: previous run's built images
 declare -ga CI_LAST_BUILT_IMAGES=() 2>/dev/null || true
 
 # Initialize directory paths (only if not already set by caller)
@@ -224,7 +233,13 @@ ci_generate_tag(){
             echo "${CONFIG[CUSTOM_TAGS]:-latest}"
             ;;
         *)
-            # If unknown, provide reasonable defaults preserving previous behaviour
+            # WHY warn instead of failing: an unset TAG_STRATEGY already defaults
+            # to version-latest above, so reaching this branch means the value was
+            # spelled wrong (e.g. "version-only", "git-sha", "latest-only" - none
+            # of which exist). Keep the historic "latest" fallback so a build still
+            # succeeds, but say so: a silently wrong tag is how images end up
+            # published as :latest when the author meant something else.
+            log_warn "Unknown TAG_STRATEGY='${S}' - falling back to 'latest'. Valid: version, runner, sha, latest, tag, custom, and the -latest/-runner/-sha combinations"
             echo "latest"
             ;;
     esac

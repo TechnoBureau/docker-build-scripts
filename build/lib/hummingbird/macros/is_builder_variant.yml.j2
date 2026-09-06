@@ -1,5 +1,17 @@
+{#- Single source of truth for "is this a builder image?".
+
+    `is_builder` is computed in Python (hb_variant.is_builder_variant) from the
+    variant name, so composite variants such as "fips-builder" or
+    "fpm-builder-fips" are recognised. Comparing `variant == "builder"` — the
+    previous test — silently produced a non-builder image for every composite
+    builder variant: no builder packages, no builder dnf defaults, and
+    cleanup_newroot() stripped /usr/share/licenses and locales out of it.
+
+    Returns the STRING "true"/"false" so existing Containerfile.j2 templates
+    that compare `is_builder_variant() == "true"` keep working. Prefer the
+    `is_builder` boolean directly in new templates. -#}
 {%- macro is_builder_variant() -%}
-{%- if image_name == "hummingbird-builder" or variant == "builder" -%}
+{%- if is_builder -%}
 true
 {%- else -%}
 false

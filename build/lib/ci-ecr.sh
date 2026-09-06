@@ -1,4 +1,3 @@
-# Updated lib/ci-ecr.sh (minor: idempotent sourcing, robust parsing; no functional changes needed)
 #!/usr/bin/env bash
 # lib/ci-ecr.sh
 # PURPOSE: ECR repo auto-create (best-effort; for all registries in loops).

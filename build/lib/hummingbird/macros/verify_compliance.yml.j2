@@ -3,7 +3,7 @@ RUN verify-compliance ${NEWROOT} /run/src/{{ distro }}/{{ variant }} \
         {%- if distro == "hummingbird" %}
         /usr/share/xml/scap/ssg/content/ssg-hummingbird-ds.xml
         {%- else %}
-        /run/src/oscap/{{ oscap.get("datastreams", {}).get(distro, "ssg-hummingbird-ds.xml") }}
+        /run/src/oscap/{{ oscap.datastreams.get(distro, "ssg-hummingbird-ds.xml") }}
         {%- endif %}
 {%- for profile in oscap.active_profiles %} \
         --{{ profile }}

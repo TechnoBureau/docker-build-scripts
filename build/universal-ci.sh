@@ -105,11 +105,13 @@ main_build() {
         }
     fi
 
-    # Resolve the image directory (used for flavor detection and context)
+    # Resolve the image directory (used for flavor detection and context).
+    # WHY both lookups run: find_image only matches hummingbird builders, so an
+    # `-i <name>` build whose source is checked out in SOURCE_DIR used to end up
+    # with an empty image_dir and was misdetected as the Dockerfile flavour.
     local image_dir=""
-    if [[ -n "$image_name" ]]; then
-        image_dir=$(ci_hummingbird_find_image "$image_name" || true)
-    elif [[ -n "${SOURCE_DIR:-}" ]]; then
+    image_dir="$(ci_hummingbird_find_image "${image_name:-}" || true)"
+    if [[ -z "$image_dir" && -n "${SOURCE_DIR:-}" ]]; then
         image_dir="$SOURCE_DIR"
     fi
 
@@ -122,11 +124,19 @@ main_build() {
 
     if [[ "$flavor" == "hummingbird" ]]; then
         log_info "Loading configuration (hummingbird properties.yml)..."
-        log_info "Extracting Git information..."
-        [[ -d "${SOURCE_DIR:-}/.git" ]] && extract_git_info "$SOURCE_DIR"
+        if [[ -d "${SOURCE_DIR:-}/.git" ]]; then
+            log_info "Extracting Git information..."
+            extract_git_info "$SOURCE_DIR"
+        fi
 
-        ci_hummingbird_build "$image_dir"
-        local build_status=$?
+        # Declared up front: ci_hummingbird_build returns before declaring it
+        # when the builder directory is invalid, and the cleanup below reads it
+        # (an unbound array aborts a caller running with `set -u`).
+        declare -ga HB_BUILT_IMAGES 2>/dev/null || true
+        HB_BUILT_IMAGES=()
+
+        local build_status=0
+        ci_hummingbird_build "$image_dir" || build_status=$?
         if [[ $build_status -ne 0 ]]; then
             log_error "Hummingbird build failed with status $build_status"
             export exit_code="$build_status"

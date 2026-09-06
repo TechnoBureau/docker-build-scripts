@@ -31,8 +31,14 @@ allows to infer expected variants even if they have never been built before.
 import fnmatch
 import json
 from pathlib import Path
+import sys
 
 import yaml
+
+from hb_config import ConfigError, as_list, load_yaml, require_keys
+
+#: Keys variables.yml must define for the variant/distro matrix to resolve.
+REQUIRED_VARIABLES = ("default_distros", "default_variants")
 
 
 def _parse_additional_variants(additional_variants: list) -> tuple[list, dict]:
@@ -115,9 +121,10 @@ def _load_image_properties(
     default_variants: list,
 ) -> dict:
     """Load and process image properties from a properties.yml file."""
-    image_props = yaml.safe_load(properties_file.read_text(encoding="utf-8"))
-    distros = _compute_distros(image_props, default_distros)
+    image_props = load_yaml(properties_file, f"properties.yml of '{properties_file.parent.name}'")
+    distros = as_list(_compute_distros(image_props, default_distros))
     variants, variant_distros = _compute_variants(image_props, default_variants)
+    variants = as_list(variants)
     distro_variants = _compute_distro_variants(distros, variants, variant_distros)
     # Remove additional_variants from output (consumed into variants)
     image_props.pop("additional_variants", None)
@@ -131,7 +138,14 @@ def _load_image_properties(
         "image_group": properties_file.parent.name,
         "properties": {
             "variants": variants,
+            "distros": distros,
             "distro_variants": distro_variants,
+            # WHY exported: the build driver must apply the same per-variant
+            # distro restrictions (additional_variants: [{name, distros}]) that
+            # produced distro_variants above. Without it the driver builds the
+            # full distro x variant product and attempts combinations this file
+            # explicitly forbids, e.g. ubi9/fips.
+            "variant_distros": variant_distros,
             "repository": properties_file.parent.name,
         }
         | image_props,
@@ -144,14 +158,21 @@ def main() -> None:
 
     # Read variables.yml
     variables_file = base_dir / "images/variables.yml"
-    variables = yaml.safe_load(variables_file.read_text(encoding="utf-8"))
-    default_distros = variables["default_distros"]
-    default_variants = variables["default_variants"]
+    variables = load_yaml(variables_file, "images/variables.yml")
+    require_keys(variables, REQUIRED_VARIABLES, str(variables_file))
+    default_distros = as_list(variables["default_distros"])
+    default_variants = as_list(variables["default_variants"])
 
     properties_files = sorted(
         (base_dir / "images").glob("*/properties.yml"),
         key=lambda path: str(path.relative_to(base_dir)),
     )
+    if not properties_files:
+        raise ConfigError(
+            f"No images/*/properties.yml found under {base_dir}. "
+            f"Run this generator from the work-tree root (the directory that "
+            f"holds images/ and .cache/)."
+        )
 
     # Aggregate properties files
     output = {
@@ -184,6 +205,21 @@ def main() -> None:
         encoding="utf-8",
     )
 
+    print(
+        f"Aggregated {len(properties_files)} image(s) into {properties_json} "
+        f"(distros: {', '.join(default_distros)}; variants: {', '.join(default_variants)})"
+    )
+
+
+def run() -> int:
+    """Entry point that turns configuration problems into a clean message."""
+    try:
+        main()
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run())

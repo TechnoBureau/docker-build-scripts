@@ -16,40 +16,83 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 import jinja2
 import yaml
 
+from hb_packages import resolve_package_set
+from hb_config import (
+    LIST_POLICY_EXTEND,
+    ConfigError,
+    as_bool,
+    deep_merge,
+    load_yaml,
+    require_keys,
+)
+from hb_variant import (
+    decompose_variant,
+    image_repository,
+    is_builder_variant,
+    resolve_image_name,
+)
 
-def get_submodule_hashes() -> dict[str, str]:
-    """Get git hashes for all submodules.
+#: Registry used for the canonical_name label when neither properties.yml nor
+#: variables.yml declares one.
+DEFAULT_REGISTRY = "ghcr.io/technobureau"
+
+#: Keys every properties.yml must provide for the labels and tags to render.
+#: Validated up front so a typo reports the image and the missing keys instead
+#: of a bare KeyError from deep inside label construction.
+REQUIRED_PROPERTIES = ("description", "summary", "url", "stream", "tags")
+
+#: Compliance profiles that can be switched on through oscap.profiles.
+OSCAP_PROFILES = ("cis", "stig")
+
+
+def get_submodule_hashes(search_dir: Path) -> dict[str, str]:
+    """Get git hashes for all submodules of the repository at search_dir.
 
     Returns:
-        Dictionary mapping submodule paths to their git hashes.
+        Dictionary mapping submodule paths to their git hashes. Empty when git
+        is unavailable or the directory is not inside a git work tree — a
+        source build then renders "unknown" instead of aborting generation.
     """
     # Maximum number of splits when parsing git submodule output
     max_splits = 2
     # Minimum number of parts required (hash and path)
     min_parts = 2
 
-    result = subprocess.run(
-        ["git", "submodule"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            # WHY "status": bare `git submodule` prints usage and exits 128,
+            # which aborted rendering for every source-built image.
+            ["git", "submodule", "status"],
+            cwd=search_dir,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return {}
+
+    if result.returncode != 0:
+        return {}
 
     hashes = {}
     for line in result.stdout.strip().split("\n"):
         if line.strip():
-            # Parse format: " <hash> <path> (<branch_info>)"
+            # Parse format: " <hash> <path> (<branch_info>)"; a leading "-"
+            # marks an uninitialised submodule, "+" a checked-out commit that
+            # differs from the recorded one. Both are stripped with the rest.
             parts = line.strip().split(" ", max_splits)
             if len(parts) >= min_parts:
                 hash_value = parts[0]
                 # Only keep alphanumeric characters in hash
                 hash_value = re.sub(r"[^a-zA-Z0-9]", "", hash_value)
                 path = parts[1]
-                hashes[path] = hash_value
+                if hash_value:
+                    hashes[path] = hash_value
 
     return hashes
 
@@ -70,7 +113,7 @@ def parse_gitmodules(gitmodules_path: str | Path) -> dict[str, dict[str, str]]:
     config = configparser.ConfigParser()
     config.read(gitmodules_path)
 
-    submodule_hashes = get_submodule_hashes()
+    submodule_hashes = get_submodule_hashes(gitmodules_path.parent)
 
     submodules = {}
     for section in config.sections():
@@ -131,34 +174,36 @@ class ImageContext:
                 break
             current = current.parent
         else:
-            raise ValueError(f"Base directory not found for {self.output_file}")
+            raise ValueError(
+                f"No .cache/properties.json above {self.output_file}. "
+                f"Run aggregate_properties.py from the work-tree root first."
+            )
         self.macros_dir = self.base_dir / "macros"
 
         # Load properties
         properties_cache_path = self.base_dir / ".cache/properties.json"
         self.properties = json.loads(properties_cache_path.read_text(encoding="utf-8"))
-        self.image_properties = self.properties["images"][self.image_name]["properties"]
+        image_entry = self.properties["images"].get(self.image_name)
+        if image_entry is None:
+            raise ValueError(
+                f"Image '{self.image_name}' (from path {self.output_file}) is not in "
+                f"{properties_cache_path}. Known images: "
+                f"{', '.join(sorted(self.properties['images'])) or '<none>'}"
+            )
+        self.image_properties = image_entry["properties"]
+        require_keys(
+            self.image_properties,
+            REQUIRED_PROPERTIES,
+            f"properties.yml of image '{self.image_name}'",
+        )
 
         # Build template variables
         self.variables = self._build_variables()
 
     @staticmethod
     def _deep_merge(base: dict, override: dict) -> dict:
-        """Deep-merge override into base, returning a new dict.
-
-        For dict values, recursively merge rather than replace.
-        For list values, concatenate (base first, then override).
-        For all other types, override wins.
-        """
-        result = dict(base)
-        for key, value in override.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = ImageContext._deep_merge(result[key], value)
-            elif key in result and isinstance(result[key], list) and isinstance(value, list):
-                result[key] = result[key] + value
-            else:
-                result[key] = value
-        return result
+        """Deep-merge override into base (lists concatenate for templates)."""
+        return deep_merge(base, override, LIST_POLICY_EXTEND)
 
     def _build_variables(self) -> dict:
         """Build template variables from properties cache."""
@@ -174,6 +219,14 @@ class ImageContext:
         variables = self._deep_merge(variables, self.properties["variables"])
         variables = self._deep_merge(variables, self.image_properties)
 
+        # Variant semantics come from hb_variant so the macros, the labels and
+        # the image name the build driver publishes can never disagree.
+        variant_info = decompose_variant(self.variant)
+        variables["variant_base"] = variant_info.base
+        variables["is_builder"] = is_builder_variant(self.image_name, self.variant)
+        variables["is_fips"] = variant_info.is_fips
+        variables["image_repo_name"] = resolve_image_name(self.image_name, self.variant)
+
         # Package name for version/tag lookup (e.g. ruby4.0 for ruby-4-0 on Hummingbird)
         # Lookup order: distro/variant, variant, distro, then main_package
         version_pkg_map = self.image_properties.get("version_package") or {}
@@ -186,24 +239,13 @@ class ImageContext:
             or fallback
         )
 
-        # Add gitmodules
-        gitmodules_path = self.base_dir / ".gitmodules"
-        if gitmodules_path.exists():
-            variables["gitmodules"] = parse_gitmodules(gitmodules_path)
+        # Add gitmodules. Always defined (empty when there is no submodule
+        # metadata) because package_version.yml.j2 subscripts it, and a
+        # subscript on an undefined name aborts the render under StrictUndefined.
+        variables["gitmodules"] = self._load_gitmodules()
 
         # Add RPM versions
-        lockfile_path = self.variant_dir / "rpms/rpms.lock.yaml"
-        if lockfile_path.exists():
-            variables["rpm_versions"] = self._extract_rpm_versions(lockfile_path)
-        else:
-            rpm_versions_cache = self.base_dir / ".cache/rpm-versions.yml"
-            if rpm_versions_cache.exists():
-                rpm_versions_data = (
-                    yaml.safe_load(rpm_versions_cache.read_text(encoding="utf-8")) or {}
-                )
-                variables["rpm_versions"] = {
-                    name: str(version) for name, version in rpm_versions_data.items()
-                }
+        variables["rpm_versions"] = self._load_rpm_versions()
 
         # Add tags
         tags = self.image_properties["tags"]
@@ -239,8 +281,7 @@ class ImageContext:
 
         variables["inject_labels"] = self._build_inject_labels(rendered_tags)
 
-        # Build arch-specific packages map from rpm_packages entries
-        variables["arch_specific_packages"] = self._collect_arch_packages(variables)
+        self._set_package_sets(variables)
 
         # Add 'container_user'; can be per-variant dict or simple value (string/int)
         user_config = self.image_properties.get("user", "default")
@@ -249,10 +290,66 @@ class ImageContext:
         else:
             user_value = str(user_config)
         variables["container_user"] = user_value
+        if user_value == "default" and not variables.get("default_user"):
+            raise ConfigError(
+                f"Image '{self.image_name}' variant '{self.variant}' runs as the "
+                f"default user but variables.yml does not define 'default_user'. "
+                f"Set default_user (uid or name) or user: <value> in properties.yml."
+            )
 
         self._compute_oscap_config(variables)
 
         return variables
+
+    def _load_gitmodules(self) -> dict[str, dict[str, str]]:
+        """Load submodule metadata from the image dir, then the work-tree root.
+
+        The build driver copies a builder's .gitmodules next to its
+        properties.yml (images/<name>/.gitmodules); upstream layouts keep it at
+        the repository root. Both are honoured so source builds resolve
+        submodule versions in either tree.
+        """
+        for candidate in (self.image_dir / ".gitmodules", self.base_dir / ".gitmodules"):
+            if candidate.exists():
+                return parse_gitmodules(candidate)
+        return {}
+
+    def _load_rpm_versions(self) -> dict[str, str]:
+        """Resolve package versions for this distro/variant.
+
+        Precedence:
+          1. ``rpms/rpms.lock.yaml`` of the variant (hermetic lockfile).
+          2. ``.cache/rpm-versions.yml`` written by get_rpm_versions.sh.
+
+        The cache is distro-aware: get_rpm_versions.sh queries each distro
+        against its own repositories and records the results per distro, so a
+        ubi9 build must not pick up the hummingbird version of the same
+        package name. The flat (single-distro) layout is still accepted.
+        """
+        lockfile_path = self.variant_dir / "rpms/rpms.lock.yaml"
+        if lockfile_path.exists():
+            return self._extract_rpm_versions(lockfile_path)
+
+        cache_path = self.base_dir / ".cache/rpm-versions.yml"
+        if not cache_path.exists():
+            return {}
+
+        data = load_yaml(cache_path, ".cache/rpm-versions.yml")
+        per_distro = data.get("distros")
+        if isinstance(per_distro, dict):
+            versions = per_distro.get(self.distro) or {}
+            if not versions:
+                raise ConfigError(
+                    f".cache/rpm-versions.yml has no entry for distro "
+                    f"'{self.distro}' (known: {', '.join(sorted(per_distro))}). "
+                    f"Re-run get_rpm_versions.sh for this distro."
+                )
+        else:
+            # Flat layout: {package: evr}. Kept for caches produced before the
+            # per-distro format existed.
+            versions = data
+
+        return {str(name): str(version) for name, version in versions.items()}
 
     @staticmethod
     def _variant_matches(variant: str, patterns: list[str]) -> bool:
@@ -260,41 +357,67 @@ class ImageContext:
         return any(fnmatch(variant, p) for p in patterns)
 
     def _compute_oscap_config(self, variables: dict) -> None:
-        """Compute per-variant oscap configuration from merged oscap settings.
+        """Normalise and resolve the oscap settings for this variant.
 
-        Resolves active profiles and per-profile exclude rules for the current
-        variant, adding computed keys to variables["oscap"]:
-          - active_profiles: list of profile names active for this variant
-          - profile_exclude_rules: dict mapping profile name -> filtered rules
-          - has_tailoring: bool, whether a tailoring file is needed
+        ``variables["oscap"]`` is ALWAYS defined after this call, with the
+        computed keys present:
+
+          - enabled: bool, whether compliance verification runs at all
+          - active_profiles: profile names active for this variant
+          - profile_exclude_rules: profile name -> filtered exclude rules
+          - has_tailoring: bool, whether a tailoring file must be generated
+
+        WHY always defined: the macros and oscap-tailoring.xml.j2 read
+        ``oscap.*`` directly, and Jinja's StrictUndefined turns a missing key
+        into "oscap is undefined" — which aborted generation for every image
+        whose variables.yml simply did not configure oscap.
+
+        Profile activation supports two spellings: a boolean (``stig: true``)
+        and a variant-scoped mapping (``stig: {variants: ["*builder*"]}``).
         """
-        oscap = variables.get("oscap", {})
-        if not oscap.get("enabled", False):
+        configured = variables.get("oscap") or {}
+        if not isinstance(configured, dict):
+            raise ConfigError(
+                f"oscap must be a mapping in variables.yml/properties.yml, "
+                f"got {type(configured).__name__}"
+            )
+
+        oscap = dict(configured)
+        oscap.setdefault("profiles", {})
+        oscap.setdefault("exclude_rules", [])
+        oscap.setdefault("datastreams", {})
+        oscap.setdefault("crypto_policy", "")
+        oscap.setdefault("crypto_policy_variants", {})
+        oscap["enabled"] = as_bool(oscap.get("enabled"), default=False)
+        oscap["active_profiles"] = []
+        oscap["profile_exclude_rules"] = {}
+        oscap["has_tailoring"] = False
+        variables["oscap"] = oscap
+
+        if not oscap["enabled"]:
             return
 
         variant = variables["variant"]
+        profiles_config = oscap["profiles"] or {}
 
-        # Determine active profiles from profiles config (defaults in variables.yml)
-        profiles_config = oscap.get("profiles", {})
         active_profiles = []
-        for profile_name in ["cis", "stig"]:
+        for profile_name in OSCAP_PROFILES:
             setting = profiles_config.get(profile_name, False)
-            if setting is True:
-                active_profiles.append(profile_name)
-            elif isinstance(setting, dict):
-                variant_patterns = setting.get("variants", [])
-                if self._variant_matches(variant, variant_patterns):
+            if isinstance(setting, dict):
+                if self._variant_matches(variant, setting.get("variants", [])):
                     active_profiles.append(profile_name)
+            elif as_bool(setting):
+                active_profiles.append(profile_name)
 
         # Filter exclude_rules per profile (variants field supports globs)
-        all_rules = oscap.get("exclude_rules", [])
+        all_rules = oscap["exclude_rules"] or []
         profile_exclude_rules = {}
         for profile_name in active_profiles:
             profile_exclude_rules[profile_name] = [
-                r
-                for r in all_rules
-                if ("variants" not in r or self._variant_matches(variant, r["variants"]))
-                and ("profiles" not in r or profile_name in r["profiles"])
+                rule
+                for rule in all_rules
+                if ("variants" not in rule or self._variant_matches(variant, rule["variants"]))
+                and ("profiles" not in rule or profile_name in rule["profiles"])
             ]
 
         oscap["active_profiles"] = active_profiles
@@ -304,93 +427,53 @@ class ImageContext:
     def _set_canonical_name(self, variables: dict) -> None:
         """Set canonical_name, registries and cpe in variables.
 
-        The first registry in the per-image registries list (or the global
-        default registry) becomes the canonical name, e.g.
+        The first registry becomes the canonical name, e.g.
         ghcr.io/technobureau/curl-builder. All registries are stored so the
         build can tag and push the image to every registry.
+
+        WHY hb_variant.resolve_image_name: the ``name`` label is what scanners
+        use to resolve the published image, so it must be built with the same
+        rule the build driver uses for CONFIG[IMAGE_NAME]. Appending every
+        non-default variant (the previous behaviour) advertised references that
+        were never pushed — e.g. ".../curl-fips" while the image was published
+        as ".../curl:<version>-fips".
         """
         registries = self.image_properties.get("registries") or []
         if not registries:
-            default_registry = self.properties["variables"].get("registry", "ghcr.io/technobureau")
+            default_registry = self.properties["variables"].get("registry", DEFAULT_REGISTRY)
             registries = [default_registry]
         variables["registries"] = registries
-        canonical_name = self.image_name
-        if self.variant != "default":
-            canonical_name = f"{canonical_name}-{self.variant}"
-        variables["canonical_name"] = f"{registries[0]}/{canonical_name}"
+        variables["canonical_name"] = image_repository(
+            registries[0], self.image_name, self.variant
+        )
         variables["cpe"] = ""
 
-    _SUPPORTED_ARCHES = ("aarch64", "x86_64")
+    def _set_package_sets(self, variables: dict) -> None:
+        """Expose the resolved package sets to the templates.
 
-    def _collect_arch_packages(self, variables: dict) -> dict[str, list[str]]:
-        """Collect arch-specific packages from rpm_packages entries.
-
-        Scans all matching rpm_packages keys for object entries with arch
-        constraints (arches.only or arches.not) and groups them by architecture.
-
-        Returns:
-            Dictionary mapping arch names to lists of package names.
+        Delegates to hb_packages.resolve_package_set so ARG MAIN_PACKAGES and
+        rpms.in.yaml can never disagree about what this variant installs.
         """
-        rpm_packages = variables.get("rpm_packages", {})
-        distro = self.distro
-        variant = self.variant
-        distro_variant = f"{distro}/{variant}"
-        matching_keys = {"all", "build-deps", distro, variant, distro_variant}
+        shared = dict(self.properties["variables"])
+        # An image may extend the shared default packages in its properties.yml.
+        if isinstance(self.image_properties.get("default_rpm_packages"), dict):
+            shared["default_rpm_packages"] = deep_merge(
+                shared.get("default_rpm_packages") or {},
+                self.image_properties["default_rpm_packages"],
+                LIST_POLICY_EXTEND,
+            )
 
-        arch_packages: dict[str, list[str]] = {}
-        for key, pkg_list in rpm_packages.items():
-            if key not in matching_keys:
-                continue
-            for entry in pkg_list:
-                if not isinstance(entry, dict) or "name" not in entry:
-                    continue
-                arches_spec = entry.get("arches", {})
-                if "only" in arches_spec:
-                    only = arches_spec["only"]
-                    if isinstance(only, str):
-                        only = [only]
-                    target_arches = [a for a in only if a in self._SUPPORTED_ARCHES]
-                elif "not" in arches_spec:
-                    excluded = arches_spec["not"]
-                    if isinstance(excluded, str):
-                        excluded = [excluded]
-                    target_arches = [a for a in self._SUPPORTED_ARCHES if a not in excluded]
-                else:
-                    continue
-                for arch in target_arches:
-                    arch_packages.setdefault(arch, []).append(entry["name"])
-
-        return arch_packages
-
-    _MODIFIER_SUFFIXES = frozenset({"builder", "fips"})
-
-    @staticmethod
-    def _decompose_variant(variant: str) -> tuple[str, bool, bool]:
-        """Parse variant name into (base, is_builder, is_fips).
-
-        Strips known modifier suffixes from the right in any order, so
-        "fpm-fips-builder" and "fpm-builder-fips" both yield base="fpm".
-        A bare modifier (e.g., "builder") yields base="default".
-        """
-        rest = variant
-        found: set[str] = set()
-        while True:
-            head, sep, tail = rest.rpartition("-")
-            if sep and tail in ImageContext._MODIFIER_SUFFIXES:
-                found.add(tail)
-                rest = head
-            elif rest in ImageContext._MODIFIER_SUFFIXES:
-                found.add(rest)
-                rest = ""
-                break
-            else:
-                break
-        base = rest or "default"
-        return base, "builder" in found, "fips" in found
+        package_set = resolve_package_set(
+            self.image_properties, shared, self.distro, self.variant
+        )
+        variables["main_packages"] = package_set.main
+        variables["build_packages"] = package_set.build
+        variables["arch_specific_packages"] = package_set.arch_packages
 
     def _build_variant_labels(self) -> dict[str, str]:
         """Build structured variant labels for inject_labels."""
-        base, is_builder, is_fips = self._decompose_variant(self.variant)
+        variant_info = decompose_variant(self.variant)
+        base = variant_info.base
 
         base_descs = {
             **self.properties["variables"].get("variant_descriptions", {}),
@@ -409,9 +492,9 @@ class ImageContext:
             "io.hummingbird-project.variant.base": base,
             "io.hummingbird-project.variant.description": base_descs[base],
         }
-        if is_builder:
+        if variant_info.is_builder:
             labels["io.hummingbird-project.variant.builder"] = "true"
-        if is_fips:
+        if variant_info.is_fips:
             labels["io.hummingbird-project.variant.fips"] = "true"
         return labels
 
@@ -524,17 +607,47 @@ class ImageContext:
         full_template = macros + "\n" + template
         return jinja2.Template(full_template, undefined=jinja2.StrictUndefined).render(**variables)
 
-    def write_output_file(self, content: str) -> None:
-        """Write content to output file and print success message.
+    def write_output_file(self, content: str) -> bool:
+        """Write content to the output file; skip empty renders.
 
         Args:
             content: Content to write
+
+        Returns:
+            True when the file was written, False when the render was empty
+            and therefore skipped (e.g. oscap-tailoring.xml for an image with
+            no exclude rules). Skipping keeps the work tree free of files that
+            look generated but carry no information.
         """
-        self.output_file.write_text(content.strip() + "\n", encoding="utf-8")
-        if self.variant:
-            print(f"Generated {self.output_file} for {self.image_name}/{self.variant}")
-        else:
-            print(f"Generated {self.output_file} for {self.image_name}")
+        body = content.strip()
+        if not body:
+            print(f"Skipped {self.output_file} (empty render)")
+            return False
+
+        self.output_file.write_text(body + "\n", encoding="utf-8")
+        print(f"Generated {self.output_file} for {self.image_name}/{self.variant}")
+        return True
+
+
+def render_template(template_file: Path, output_file: Path) -> bool:
+    """Render one template to one output file.
+
+    Args:
+        template_file: Jinja2 template to render.
+        output_file: Destination; its path also selects the image, distro and
+            variant (images/<image>/<distro>/<variant>/<file>).
+
+    Returns:
+        True when the output file was written.
+    """
+    template_content = Path(template_file).read_text(encoding="utf-8")
+    context = ImageContext(Path(output_file))
+    rendered = context.render_jinja2(
+        template_content,
+        context.variables,
+        context.macros_dir,
+    )
+    return context.write_output_file(rendered)
 
 
 def main() -> None:
@@ -554,14 +667,13 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    template_content = args.template_file.read_text(encoding="utf-8")
-    context = ImageContext(args.output_file)
-    rendered = context.render_jinja2(
-        template_content,
-        context.variables,
-        context.macros_dir,
-    )
-    context.write_output_file(rendered)
+    try:
+        render_template(args.template_file, args.output_file)
+    except (ConfigError, ValueError) as exc:
+        # WHY: a configuration problem is an operator error, not a crash —
+        # print the actionable message instead of a Python traceback.
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

@@ -40,7 +40,21 @@ ci_setup_buildx(){
     container_engine="$(detect_container_engine 2>/dev/null || echo docker)"
     # WHY: Use CONFIG[PLATFORMS] from parsed config, not env var PLATFORMS
     local platforms="${CONFIG[PLATFORMS]:-}"
+    # WHY honoured here (and nowhere else): INSTALL_BINFMT is the escape hatch for
+    # runners that cannot install QEMU emulators (no --privileged, no binfmt_misc).
+    # auto  = install only the emulators that are missing (default, historic behaviour)
+    # false = never install; report what is missing and let the build fail loudly
+    # force = install even when the emulator is already registered
     local install_binfmt="${INSTALL_BINFMT:-auto}"
+    case "$(echo "$install_binfmt" | tr '[:upper:]' '[:lower:]')" in
+        ""|auto) install_binfmt="auto" ;;
+        false|no|0|off|never|skip) install_binfmt="false" ;;
+        true|yes|1|on|always|force) install_binfmt="force" ;;
+        *)
+            log_warn "Unknown INSTALL_BINFMT='${INSTALL_BINFMT}' (expected auto|false|force) - using auto"
+            install_binfmt="auto"
+            ;;
+    esac
     local dind_image="${DIND_IMAGE:-${dind_image:-}}"
 
     ci_get_required_binfmt_arches() {
@@ -120,14 +134,16 @@ ci_setup_buildx(){
     ci_ensure_binfmt_support() {
         local requested_platforms="$1"
         local runtime_image="$2"
-        local required_arches=""
+        # install_mode defaults to auto so external callers keep working unchanged
+        local install_mode="${3:-${install_binfmt:-auto}}"
+        local required_arch_str=""
         local install_targets=""
         local register_path="/proc/sys/fs/binfmt_misc/register"
 
-        required_arches="$(ci_get_required_binfmt_arches "$requested_platforms")"
-        required_arches="$(echo "$required_arches" | xargs 2>/dev/null || true)"
+        required_arch_str="$(ci_get_required_binfmt_arches "$requested_platforms")"
+        required_arch_str="$(echo "$required_arch_str" | xargs 2>/dev/null || true)"
 
-        if [[ -z "$required_arches" ]]; then
+        if [[ -z "$required_arch_str" ]]; then
             log_info "No non-native emulation required for platforms: $requested_platforms"
             return 0
         fi
@@ -138,7 +154,7 @@ ci_setup_buildx(){
                 log_warn "Failed to mount binfmt_misc (continuing)"
         fi
 
-        install_targets="${required_arches// /,}"
+        install_targets="${required_arch_str// /,}"
         log_info "Ensuring binfmt emulation for required architectures: ${install_targets}"
 
         # Check supported platforms before installation
@@ -173,10 +189,29 @@ ci_setup_buildx(){
             fi
         done
 
-        if [[ ${#missing_arches[@]} -eq 0 ]]; then
+        if [[ "$install_mode" == "false" ]]; then
+            # WHY return 0 (not 1): the caller decides whether cross-platform is
+            # fatal. We only refuse to *install*; an already-registered emulator
+            # still works, and a single-arch build needs none of this.
+            if [[ ${#missing_arches[@]} -eq 0 ]]; then
+                log_info "All required emulators already registered (INSTALL_BINFMT=false - no installation needed)"
+            else
+                log_warn "INSTALL_BINFMT=false: not installing missing emulators: ${missing_arches[*]}"
+                log_warn "Cross-platform builds for those architectures will fail until binfmt is provided by the runner"
+            fi
+            log_info "Platform support status (binfmt installation skipped):"
+            ci_check_binfmt_platforms
+            return 0
+        fi
+
+        if [[ ${#missing_arches[@]} -eq 0 && "$install_mode" != "force" ]]; then
             log_info "All required emulators already registered - skipping installation"
         else
-            log_info "Missing emulators: ${missing_arches[*]} - attempting installation"
+            if [[ ${#missing_arches[@]} -eq 0 ]]; then
+                log_info "All required emulators already registered - reinstalling (INSTALL_BINFMT=force)"
+            else
+                log_info "Missing emulators: ${missing_arches[*]} - attempting installation"
+            fi
 
             # WHY: Use detected container engine instead of hardcoded docker
             local container_engine_cmd
@@ -308,6 +343,12 @@ ci_build_and_push(){
     # WHY: Add primary registry (REGISTRY_0) info as build args
     if [[ ${#REGISTRIES[@]} -gt 0 ]]; then
         local primary_reg_entry="${REGISTRIES[0]}"
+        # WHY primary_push is parsed but unused here: REGISTRIES entries are
+        # "name,prefix,push" CSV, so the third field must be consumed for the
+        # first two to land correctly. The push/no-push decision is taken per
+        # registry in the build+push loop below ("for reg_entry in REGISTRIES"),
+        # which is the only place that may act on it.
+        # shellcheck disable=SC2034
         IFS=',' read -r primary_reg primary_prefix primary_push <<< "$primary_reg_entry"
         if [[ -n "$primary_reg" ]]; then
             build_args+=("--build-arg" "REGISTRY=${primary_reg}")
@@ -964,11 +1005,24 @@ ci_build_and_push(){
     ci_cleanup_pulled_images "$engine" "${pulled_images[@]}"
 
     # Cleanup chunkah rootfs archives (ARCHIVE_PATH in the build context)
+    # WHY only out-*.ociarchive: this pattern matches the per-arch archives the
+    # engine asks for through ARCHIVE_PATH. It deliberately does NOT match the
+    # hummingbird `out.ociarchive`, whose final stage reads
+    # `FROM oci-archive:out.ociarchive` from the same context: when the engine
+    # replays the archive-producing RUN from its layer cache the file is not
+    # rewritten, so deleting it here would fail the next build in the same
+    # pipeline with "archive file not found". The hummingbird driver removes
+    # those archives once, after its last row (ci_hummingbird_cleanup_archives).
     if [[ "${CONFIG[CHUNKAH]:-false}" == "true" && -d "$context" ]]; then
         rm -f "$context"/out-*.ociarchive 2>/dev/null || true
         log_info "Cleaned up chunkah rootfs archives from ${context}"
     fi
 
+    # WHY a global with no reader in this repo: CI_LAST_BUILT_IMAGES is declared
+    # in ci-core.sh as part of the consumer-facing contract. ci_build_and_push
+    # resets CI_BUILT_IMAGES on every call, so a consumer that builds several
+    # images in one pipeline reads the previous run's result from here.
+    # shellcheck disable=SC2034
     CI_LAST_BUILT_IMAGES=("${CI_BUILT_IMAGES[@]}")
     log_success "Built images: ${#CI_BUILT_IMAGES[@]}"
     return 0

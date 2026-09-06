@@ -29,6 +29,8 @@ from pathlib import Path
 
 import yaml
 
+from hb_packages import resolve_package_set
+
 
 class IndentedListDumper(yaml.SafeDumper):
     """YAML dumper with 2-space indented list items."""
@@ -85,37 +87,18 @@ def main() -> None:
         for repo in distro_repos + additional_repos
     ]
 
-    # Determine packages from image properties
-    # Supports keys: "all", "build-deps", distro, variant, or "distro/variant"
-    # Each entry can be a plain string (all arches) or a dict with "name" and
-    # "arches" keys for arch-specific packages (passed through to rpms.in.yaml).
-    distro_variant = f"{distro}/{variant}"
-    plain_packages: set[str] = set()
-    arch_packages: list[dict] = []
-    for key, pkg_list in properties.get("rpm_packages", {}).items():
-        if key not in ("all", "build-deps", distro, variant, distro_variant):
-            continue
-        for pkg in pkg_list:
-            if isinstance(pkg, str):
-                plain_packages.add(pkg)
-            elif isinstance(pkg, dict):
-                arch_packages.append(pkg)
-    # Add default packages for this variant
-    default_rpm_packages = variables.get("default_rpm_packages", {})
-    plain_packages.update(default_rpm_packages.get("all", []))
-    plain_packages.update(default_rpm_packages.get(variant, []))
-    if variant.endswith("-builder"):
-        plain_packages.update(default_rpm_packages.get("builder", []))
+    # Packages come from hb_packages.resolve_package_set — the same rule the
+    # rendered Containerfile uses for ARG MAIN_PACKAGES, so the versions
+    # resolved here are exactly the versions installed there.
+    # Entries may be plain strings (all arches) or dicts with "name" and
+    # "arches" keys (arch-specific, passed through to rpms.in.yaml).
+    package_set = resolve_package_set(properties, variables, distro, variant)
 
-    # Combine: plain strings sorted first, then arch-specific objects sorted by name
-    packages: list[str | dict] = [*sorted(plain_packages)]
-    # Deduplicate arch-specific packages by (name, arches) tuple
-    seen_arch_pkgs: set[str] = set()
-    for pkg in sorted(arch_packages, key=lambda p: p["name"]):
-        key = json.dumps(pkg, sort_keys=True)
-        if key not in seen_arch_pkgs:
-            seen_arch_pkgs.add(key)
-            packages.append(pkg)
+    # Combine: plain strings sorted first, then arch-specific objects by name
+    packages: list[str | dict] = [
+        *sorted({*package_set.main, *package_set.build}),
+        *package_set.arch_entries,
+    ]
 
     # Build complete data structure
     data = {

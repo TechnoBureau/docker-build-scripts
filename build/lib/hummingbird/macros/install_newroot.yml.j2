@@ -14,7 +14,8 @@ RUN --mount=type=cache,target=${DNF_CACHE} \
 {%- endfor %}
     esac
 {%- endif %}
-{%- set _cp = oscap.get("crypto_policy_variants", {}).get(variant, oscap.get("crypto_policy", "")) if oscap is defined else "" %}
+{#- oscap is always defined by generate_jinja2 (crypto_policy_variants wins over crypto_policy) -#}
+{%- set _cp = oscap.crypto_policy_variants.get(variant, oscap.crypto_policy) %}
 {%- if _cp and _cp != "DEFAULT" %}
 # Apply a non-DEFAULT system crypto policy without executing newroot binaries:
 # chroot breaks under emulation (rosetta/qemu), so replicate what
@@ -31,8 +32,8 @@ RUN _pol="{{ _cp }}"; \
       if [ -e "${NEWROOT}${_n}" ]; then ln -sfn "$_n" "$_f"; fi; \
     done
 {%- endif %}
-{%- if oscap.enabled | default(false)
-    and (distro == "hummingbird" or distro in oscap.get("datastreams", {}))
+{%- if oscap.enabled
+    and (distro == "hummingbird" or distro in oscap.datastreams)
     and image_name != "hummingbird-builder" %}
 {{ verify_compliance() }}
 {%- endif %}

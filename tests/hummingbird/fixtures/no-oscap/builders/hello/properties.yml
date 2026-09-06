@@ -1,0 +1,18 @@
+# Minimal builder fixture with NO oscap configuration anywhere.
+# Regression fixture: generation used to abort with
+#   jinja2.exceptions.UndefinedError: 'oscap' is undefined
+# for any image whose merged config did not define an oscap section.
+summary: hello image
+description: minimal image used to test the no-oscap path
+url: https://example.com/hello
+stream: "1.0"
+main_package: hello
+
+tags:
+  - value: "{{ package_version(package_name_for_version) }}"
+    label: org.opencontainers.image.version
+  - value: latest
+
+rpm_packages:
+  all:
+    - hello

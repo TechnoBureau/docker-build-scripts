@@ -709,7 +709,11 @@ ci_ibmcloud_save_artifact() {
         return 1
     }
 
+    # WHY meta_name/meta_image are parsed but unused: the metadata line is
+    # positional ("name|image|digest|size"), so the first two fields must be
+    # consumed for digest and size to land in the right variables.
     local meta_name meta_image meta_digest meta_size
+    # shellcheck disable=SC2034
     IFS='|' read -r meta_name meta_image meta_digest meta_size <<< "$meta"
 
     # 2. Extract tag from the image reference.
@@ -1049,6 +1053,7 @@ ci_render_summary_markdown() {
     local ld artifact_id display_name arch digest size primary type mediatype sign image_ref
     for ld in "${lines[@]:-}"; do
         # Format: ARTIFACT_ID|DISPLAY_NAME|ARCH|DIGEST|SIZE|PRIMARY|TYPE|MEDIATYPE|SIGN|IMAGE_REF (10 fields)
+        # shellcheck disable=SC2034  # artifact_id: positional placeholder (10-field record)
         IFS='|' read -r artifact_id display_name arch digest size primary type mediatype sign image_ref <<< "$ld"
 
         [[ "$primary" != "true" ]] && continue

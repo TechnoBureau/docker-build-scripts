@@ -1,0 +1,43 @@
+# curl builder fixture.
+# Exercises: multiple distros, a distro-restricted variant, a composite builder
+# variant ("fips-builder"), FIPS crypto policy, per-distro datastreams, and a
+# per-image variables.yml overlay.
+summary: curl image
+description: curl command line tool and libcurl runtime
+url: https://curl.se
+stream: "8.21"
+main_package: curl
+
+tags:
+  - value: "{{ package_version(package_name_for_version) }}"
+    label: org.opencontainers.image.version
+  - value: "{{ package_major_minor_version(package_name_for_version) }}"
+    label: io.hummingbird-project.major-minor-version
+  - value: latest
+
+rpm_packages:
+  all:
+    - curl
+    - ca-certificates
+  builder:
+    - curl-devel
+
+variants:
+  - default
+  - builder
+
+additional_variants:
+  # Restricted to hummingbird: the ubi9 repositories do not carry the FIPS
+  # package set, so ubi9/fips must never enter the build matrix.
+  - name: fips
+    distros:
+      - hummingbird
+  # Composite modifier: builder AND fips. Regression fixture for variant names
+  # that are not the bare string "builder".
+  - name: fips-builder
+
+oscap:
+  crypto_policy: FIPS
+  datastreams:
+    ubi9: ssg-rhel9-ds.xml
+    ubi10: ssg-rhel10-ds.xml

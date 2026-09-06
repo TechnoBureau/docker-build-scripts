@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Stub container engine (podman/docker) for offline tests.
+#
+# get_rpm_versions.sh runs:
+#   <engine> run --rm [-v repo:/etc/yum.repos.d/repo:ro]... <builder-image> \
+#       dnf repoquery --quiet --latest-limit=1 --queryformat '...' \
+#       [--disablerepo=public-hummingbird*] <package>...
+#
+# This stub answers that one call from fixtures/rpm-versions.tsv, so the whole
+# version-resolution stage can be tested without a container runtime, a builder
+# image or network access. Every other invocation succeeds silently.
+#
+# The distro is inferred the same way the real script distinguishes them: from
+# the bind-mounted repo file names.
+
+set -euo pipefail
+
+STUB_DATA="${HB_STUB_DATA:?HB_STUB_DATA must point at rpm-versions.tsv}"
+STUB_LOG="${HB_STUB_LOG:-/dev/null}"
+printf '%s\n' "$*" >> "${STUB_LOG}"
+
+# Only `run ... dnf repoquery` needs an answer.
+case "$*" in
+    *"dnf repoquery"*) ;;
+    *) exit 0 ;;
+esac
+
+distro="hummingbird"
+for arg in "$@"; do
+    case "${arg}" in
+        *ubi9.repo*) distro="ubi9" ;;
+        *ubi10.repo*) distro="ubi10" ;;
+    esac
+done
+
+# Package names are the positional args after `repoquery` that are not flags.
+in_packages=0
+skip_next=0
+packages=()
+for arg in "$@"; do
+    if ((skip_next)); then skip_next=0; continue; fi
+    if ((in_packages)); then
+        case "${arg}" in
+            --queryformat) skip_next=1 ;;
+            -*) ;;
+            *) packages+=("${arg}") ;;
+        esac
+        continue
+    fi
+    [[ "${arg}" == "repoquery" ]] && in_packages=1
+done
+
+for package in ${packages[@]+"${packages[@]}"}; do
+    awk -F '\t' -v d="${distro}" -v p="${package}" \
+        '$1 == d && $2 == p { print $2, $3 }' "${STUB_DATA}"
+done

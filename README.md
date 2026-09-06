@@ -9,6 +9,8 @@ A comprehensive collection of enterprise-grade Bash scripts designed for buildin
 - [Core Technologies](#core-technologies)
 - [Quick Start](#quick-start)
 - [Build Scripts](#build-scripts)
+- [Hummingbird Builder](#hummingbird-builder)
+- [Agent & Contributor Documentation](#agent--contributor-documentation)
 - [Docker Scripts](#docker-scripts)
 - [Prebuildfs Libraries](#prebuildfs-libraries)
 - [Development Conventions](#development-conventions)
@@ -44,15 +46,20 @@ This repository provides three main categories of utilities:
 The repository follows a modular design pattern:
 
 ```
-wm-scripts/
-├── build/              # CI/CD and operator management scripts
-│   ├── lib/           # Modular libraries (ci-*.sh, operator-*.sh)
-│   └── *.sh           # Main executables (universal-ci.sh, operator-rebundle.sh, etc.)
-├── docker/            # Container setup and hardening scripts
-│   └── *.sh           # Standalone installation scripts
-└── prebuildfs/        # Container runtime libraries
-└── opt/scripts/
-        └── lib*.sh    # Reusable shell libraries
+docker-build-scripts/
+├── build/                  # CI/CD and operator management scripts
+│   ├── lib/                # Modular libraries (ci-*.sh, operator-*.sh)
+│   │   ├── ci-hummingbird.sh   # hummingbird flavour driver
+│   │   └── hummingbird/        # generators, macros, templates, vendored build inputs
+│   └── *.sh                # Main executables (universal-ci.sh, promotion.sh, ...)
+├── docker/                 # Container setup and hardening scripts
+│   └── *.sh                # Standalone installation scripts
+├── tests/hummingbird/      # Offline regression suite for the hummingbird pipeline
+├── context/                # Agent & contributor knowledge base
+├── AGENTS.md               # Entry point for AI agents (hooks, invariants, ownership map)
+└── prebuildfs/             # Container runtime libraries
+    └── opt/scripts/
+        └── lib*.sh         # Reusable shell libraries
 ```
 
 **Key Design Principles:**
@@ -93,7 +100,7 @@ wm-scripts/
 
 ## Build Scripts
 
-The `build/` directory contains scripts for CI/CD operations. See [Build Scripts Documentation](build/README.md) for complete details.
+The `build/` directory contains scripts for CI/CD operations. Each script documents its own usage in its header comments; see [Architecture](context/architecture.md) for how the libraries fit together and [Hummingbird Builder](#hummingbird-builder) for the declarative RPM pipeline.
 
 ### Universal CI Pipeline
 
@@ -124,16 +131,33 @@ PLATFORMS: linux/amd64,linux/arm64
 TAG_STRATEGY: version-latest
 ```
 
-**Tag Strategies:**
-- `version-latest`: Creates both versioned tag (e.g., `1.0.0`) and `latest`
-- `version-only`: Creates only versioned tag
-- `latest-only`: Creates only `latest` tag
-- `git-sha`: Uses git commit SHA as tag
-- `version-runner`: Combines version with CI runner ID
+**Tag Strategies** (implemented in `ci_generate_tag()`, `build/lib/ci-core.sh`):
+
+| Strategy | Tags produced |
+| --- | --- |
+| `version` | `1.0.0` |
+| `latest` | `latest` |
+| `version-latest` (default) | `1.0.0` and `latest` |
+| `runner` / `sha` | CI runner id / git short SHA |
+| `runner-latest` / `sha-latest` | runner id or SHA, plus `latest` |
+| `version-runner` / `version-sha` | `1.0.0.<runner>` / `1.0.0.<sha>` |
+| `version-runner-latest` / `version-sha-latest` | the above, plus `latest` |
+| `tag` / `tag-latest` | from `CONFIG[GIT_TAG]`, optionally plus `latest` |
+| `custom` | the space-separated list in `CONFIG[CUSTOM_TAGS]` |
+
+> There is **no** `version-only`, `latest-only` or `git-sha` strategy — use
+> `version`, `latest` and `sha`. An unrecognised value logs a warning and falls
+> back to `latest` rather than failing the build.
 
 ### Operator Management
 
 Complete lifecycle: Rebundle → Catalog → Promotion
+
+> **Note:** `operator-rebundle.sh` and `operator-catalog.sh` (and the
+> `operator-*.sh` libraries they use) are **not part of this repository** — they
+> live in the companion operator tooling repo. The commands below are kept
+> because the promotion step *is* here and the three are normally run in
+> sequence. Only `promotion.sh` will resolve in this checkout.
 
 ```bash
 # Step 1: Harden and rebundle operator with STIG compliance
@@ -162,17 +186,132 @@ Complete lifecycle: Rebundle → Catalog → Promotion
 
 ### Key Build Scripts
 
-- **universal-ci.sh**: Main CI/CD pipeline for container builds ([detailed guide](build/universal-ci.md))
-- **operator-rebundle.sh**: Operator hardening and rebundling ([guide](build/operator-rebundle.md))
-- **operator-catalog.sh**: OLM catalog generation ([guide](build/operator-catalog.md))
-- **promotion.sh**: Image promotion between registries ([guide](build/promotion.md))
+- **universal-ci.sh**: Main CI/CD pipeline for container builds — `main_build()` is sourced by consumer repos ([architecture](context/architecture.md))
+- **promotion.sh**: Image promotion between registries (`./build/promotion.sh --help`)
 - **go-dependencies.sh**: Installs Go language dependencies with version control
 - **re-source.sh**: Utility for re-sourcing environment variables
+- **market-actions.py**: Bulk GitHub Enterprise workflow management. Fill in `REPO_OWNER` / `REPO_NAMES` and supply `GITHUB_TOKEN` from the environment before running — the checked-in value is a placeholder
+- **ci-hummingbird.sh** + **hummingbird/**: declarative RPM image builder ([Hummingbird Builder](#hummingbird-builder))
+- *(not in this repo)* **operator-rebundle.sh**, **operator-catalog.sh**: operator hardening and OLM catalog generation
 
 ### Build Libraries (`build/lib/`)
 
-- **ci-*.sh**: Modular CI/CD libraries (config, registry, build, artifacts)
-- **operator-*.sh**: Operator management libraries (bundle, catalog, CSV, image)
+- **ci-*.sh**: Modular CI/CD libraries (core, config, registry, build, artifacts, secrets)
+- **ci-hummingbird.sh**: hummingbird flavour driver (see [Hummingbird Builder](#hummingbird-builder))
+- **hummingbird/**: declarative image generators, Jinja macros/templates and vendored build inputs
+- **ci-promote.sh**: helpers used by `promotion.sh`
+
+---
+
+## Hummingbird Builder
+
+The **hummingbird** flavour builds reproducible, compliance-scanned RPM images
+from a *declarative* definition instead of a hand-written Dockerfile. One builder
+directory fans out into a matrix of distro × variant images:
+
+```
+builders/curl/                        .hbgen/images/curl/
+├── properties.yml      what          ├── hummingbird/default/  → curl:8.21.0
+├── Containerfile.j2    how           ├── hummingbird/builder/  → curl-builder:8.21.0-builder
+├── variables.yml       overrides     ├── hummingbird/fips/     → curl:8.21.0-fips
+├── rootfs/  src/       context       ├── ubi9/default/         → curl:8.10.1
+└── .gitmodules         submodules    └── ubi9/builder/         → curl-builder:8.10.1-builder
+```
+
+### Usage
+
+```bash
+# Detected automatically (properties.yml + Containerfile.j2 in the builder dir)
+./build/universal-ci.sh -i curl
+
+# Restrict the matrix
+HB_DISTROS="hummingbird" HB_VARIANTS="default,builder" ./build/universal-ci.sh -i curl
+
+# Skip the package-version stage (no container engine / no repo access)
+HB_SKIP_RPM_VERSIONS=true HB_VERSION=8.21.0 ./build/universal-ci.sh -i curl
+```
+
+### Pipeline
+
+```
+1 prepare    hbgen.py            → .hbgen/ work tree (vendored generators run unchanged)
+2 aggregate  aggregate_properties.py → variants, distros, per-variant distro restrictions
+3 rpms       hbgen.py            → <distro>/<variant>/rpms/rpms.in.yaml
+4 versions   get_rpm_versions.sh → .cache/rpm-versions.yml (per distro; needs an engine)
+5 render     hbgen.py            → Containerfile, VERSION, TAGS, oscap-tailoring.xml
+6 build      ci_build_and_push   → one image per matrix row (shared engine)
+```
+
+Every stage is a standalone command, so a failure can be reproduced without
+running the whole pipeline:
+
+```bash
+python3 build/lib/hummingbird/hbgen.py matrix  --hbgen <builder>/.hbgen --image curl
+python3 build/lib/hummingbird/hbgen.py config  --hbgen <builder>/.hbgen --image curl \
+        --distro ubi9 --variant default        # prints the exact CONFIG pairs
+```
+
+### Modules
+
+| Module | Owns |
+| --- | --- |
+| `build/lib/ci-hummingbird.sh` | Bash orchestration only: paths, logging, matrix loop, `CONFIG` |
+| `hummingbird/hbgen.py` | Pipeline CLI: `prepare`, `rpms`, `matrix`, `render`, `config`, `vars`, `distros`, `variants` |
+| `hummingbird/hb_variant.py` | Variant decomposition (`fips-builder` → base/modifiers) and image naming |
+| `hummingbird/hb_config.py` | YAML loading, deep merge, required-key validation, actionable errors |
+| `hummingbird/hb_packages.py` | Package-set resolution — one rule for `rpms.in.yaml` **and** `ARG MAIN_PACKAGES` |
+| `hummingbird/generate_jinja2.py` | Template context, labels, tags, rendering |
+| `hummingbird/macros/`, `templates/` | Jinja building blocks for the generated Containerfile |
+
+Design rule: **bash orchestrates, Python decides.** No YAML parsing in bash, no
+container-engine calls in Python.
+
+### Environment knobs
+
+| Variable | Effect |
+| --- | --- |
+| `HB_DISTROS` / `HB_VARIANTS` | Select distros / variants (validated against the definition) |
+| `HB_VERSION` / `HB_TAGS` | Override the resolved version / tag list |
+| `HB_REGISTRIES` | Comma-separated push targets (with `IMAGE_PREFIX`) |
+| `HB_SKIP_RPM_VERSIONS` | `true` skips stage 4 (versions fall back to `latest`) |
+| `HB_RPM_VERSIONS_TTL` | Reuse a version cache younger than N seconds |
+| `HB_PYTHON` | Interpreter for all generators (venv / pinned python) |
+| `HUMMINGBIRD_DIR` | Vendored machinery location (default `build/lib/hummingbird`) |
+
+### Tests
+
+```bash
+HB_PYTHON=python3 ./tests/hummingbird/run-tests.sh      # 99 assertions, offline, ~6s
+```
+
+No container engine, network, builder image or package repository required —
+`tests/hummingbird/stubs/podman` answers the `dnf repoquery` calls. See
+[tests/README.md](tests/README.md).
+
+### Documentation
+
+- [context/hummingbird-pipeline.md](context/hummingbird-pipeline.md) — concepts, stages, configuration keys, macros, invariants
+- [context/flaw-report-hummingbird.md](context/flaw-report-hummingbird.md) — the audit: 30 findings with evidence, fixes and regression ids
+- [context/extension-guide.md](context/extension-guide.md) — add a distro, variant, package group, macro or knob
+- [context/troubleshooting.md](context/troubleshooting.md) — message → cause → fix
+
+---
+
+## Agent & Contributor Documentation
+
+This repository is written to be operated by AI agents as well as humans.
+
+| File | Purpose |
+| --- | --- |
+| [`AGENTS.md`](AGENTS.md) | Entry point: runnable lifecycle hooks (`on_session_start`, `before_edit`, `after_edit`, `before_commit`, `on_failure`), the behaviour-ownership map, and the non-negotiable invariants |
+| [`context/README.md`](context/README.md) | Index of the knowledge base — load on demand, not all at once |
+| [`context/architecture.md`](context/architecture.md) | Module map, call graph, the shared `CONFIG` contract, registry precedence |
+| [`context/conventions.md`](context/conventions.md) | Bash / Python / Jinja style, `WHY:` comments, determinism rules |
+| [`context/extension-guide.md`](context/extension-guide.md) | Step-by-step recipes for the ten most common extensions |
+| [`context/troubleshooting.md`](context/troubleshooting.md) | Real messages, causes and fixes |
+| [`context/flaw-report-hummingbird.md`](context/flaw-report-hummingbird.md) | Audit findings with reproduced evidence |
+| [`tests/README.md`](tests/README.md) | How the offline suite works and how to extend it |
+| [`CLAUDE.md`](CLAUDE.md) | Repository guide for Claude Code |
 
 ---
 
@@ -375,11 +514,28 @@ export user_icr_io_ipaas_non_prod_wm_common="iamapikey"
 export password_icr_io_ipaas_non_prod_wm_common="your-api-key"
 ```
 
+### Build Behaviour
+
+```bash
+export INSTALL_BINFMT=auto   # auto (default) | false | force
+export DIND_IMAGE=""         # override the binfmt/runtime helper image
+export SOURCE_DATE_EPOCH=0   # reproducible image timestamps
+```
+
+`INSTALL_BINFMT` controls QEMU emulator installation for multi-platform builds:
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` (default) | Install only the emulators that are missing |
+| `false` | Never install; log what is missing and continue. Use on runners without `--privileged` |
+| `force` | Install even when the emulator is already registered |
+
+An unrecognised value warns and falls back to `auto`.
+
 ### Debug Mode
 
 ```bash
 export DEBUG=true          # Enable debug output
-export DEBUG=true          # Enable library debug logging
 export QUIET=false         # Ensure logging is not suppressed
 ```
 
@@ -539,13 +695,18 @@ When adding new features:
 
 ## Documentation References
 
-- [Build Scripts Documentation](build/README.md)
-- [Universal CI Pipeline Guide](build/universal-ci.md)
-- [Operator Rebundle Guide](build/operator-rebundle.md)
-- [Operator Catalog Guide](build/operator-catalog.md)
-- [Image Promotion Guide](build/promotion.md)
-- [Registry Credentials Guide](build/registry-credentials.md)
 - [Docker Scripts Documentation](docker/README.md)
+- [Architecture](context/architecture.md) — module map, call graph, `CONFIG` contract, registry precedence
+- [Hummingbird Pipeline](context/hummingbird-pipeline.md) — concepts, stages, configuration keys, macros
+- [Conventions](context/conventions.md) — bash / Python / Jinja style and determinism rules
+- [Extension Guide](context/extension-guide.md) — add a distro, variant, package group, macro or knob
+- [Troubleshooting](context/troubleshooting.md) — message → cause → fix
+- Registry credentials: see `build/lib/ci-registry.sh` and [Configuration Management](#configuration-management)
+- Universal CI usage: see [Build Scripts](#build-scripts) and the header comments in `build/universal-ci.sh`
+- [Agent Operating Manual](AGENTS.md) — hooks, invariants, behaviour-ownership map
+- [Context Knowledge Base](context/README.md) — architecture, hummingbird pipeline, conventions, extension guide, troubleshooting
+- [Hummingbird Flaw Report](context/flaw-report-hummingbird.md) — audit findings with evidence and fixes
+- [Test Suite](tests/README.md) — offline regression tests
 
 ---
 
@@ -560,11 +721,13 @@ When adding new features:
 
 ### Code Review Checklist
 
-- [ ] Follows script structure conventions
-- [ ] Includes proper error handling
+- [ ] Follows script structure conventions ([context/conventions.md](context/conventions.md))
+- [ ] Behaviour changed in its single owner only ([AGENTS.md](AGENTS.md) §2.2)
+- [ ] Includes proper error handling (libraries return non-zero; never `exit` or `${1:?}`)
 - [ ] Uses consistent logging (JSON format)
 - [ ] Includes WHY comments for non-obvious logic
-- [ ] Updates relevant documentation
+- [ ] Updates relevant documentation (`context/` and this README)
+- [ ] Adds/updates a regression assertion in [tests/hummingbird](tests/README.md)
 - [ ] Tested locally with debug mode
 - [ ] No hardcoded credentials or secrets
 

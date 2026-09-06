@@ -303,44 +303,48 @@ parse_dockerfile_from_images() {
 # =============================================================================
 find_dockerfile() {
     local name="${1:-}"
-    local found=""
+    # WHY ${VAR:-} and not "$VAR": ci-core.sh normally defines both, but a
+    # consumer that pre-sets CI_CORE_LOADED (or supplies its own core) skips
+    # that sourcing. Under the `set -u` such consumers run with, the bare
+    # "$BUILDERS_DIR" then aborts their whole job instead of falling through to
+    # the next search location. Verified: original exit=1 and silent, this
+    # version returns 1 and lets the caller continue.
+    local builders_dir="${BUILDERS_DIR:-}"
+    local source_dir="${SOURCE_DIR:-}"
+    local -a candidates=()
+    local entry dir pattern result
 
-    search() {
-        local d="$1" pat="$2"
-        [[ -d "$d" ]] || return 1
-        find "$d" -type f -name "$pat" -print -quit 2>/dev/null || true
-    }
+    # Search order is the contract: most specific first, so an explicit
+    # per-image directory always wins over a repository-wide match.
+    if [[ -n "$builders_dir" && -n "$name" ]]; then
+        candidates+=("$builders_dir/$name|Dockerfile")
+        candidates+=("$builders_dir/$name|${name}.Dockerfile")
+        candidates+=("$builders_dir/$name|*.Dockerfile")
+    fi
+    if [[ -n "$source_dir" ]]; then
+        candidates+=("$source_dir|Dockerfile")
+        candidates+=("$source_dir|${name}.Dockerfile")
+        candidates+=("$source_dir|*.Dockerfile")
+    fi
+    if [[ -n "$builders_dir" ]]; then
+        candidates+=("$builders_dir|${name}.Dockerfile")
+        candidates+=("$builders_dir|*.Dockerfile")
+    fi
 
-    try_search() {
-        local r
-        r="$(search "$@")"
-        if [[ -n "$r" ]]; then
-            echo "$r"
-            found=1
+    # WHY a flat loop instead of nested helper functions: a function defined
+    # inside a function body becomes GLOBAL on first call in bash, so the old
+    # `search`/`try_search` helpers leaked into the consumer's namespace and
+    # could shadow their own functions of the same name.
+    for entry in "${candidates[@]+"${candidates[@]}"}"; do
+        dir="${entry%%|*}"
+        pattern="${entry#*|}"
+        [[ -d "$dir" ]] || continue
+        result="$(find "$dir" -type f -name "$pattern" -print -quit 2>/dev/null || true)"
+        if [[ -n "$result" ]]; then
+            printf '%s\n' "$result"
             return 0
         fi
-        return 1
-    }
-
-    # Priority 1-3: BUILDERS_DIR/name patterns
-    if [[ -n "$BUILDERS_DIR" && -n "$name" ]]; then
-        try_search "$BUILDERS_DIR/$name" "Dockerfile" && return 0
-        try_search "$BUILDERS_DIR/$name" "${name}.Dockerfile" && return 0
-        try_search "$BUILDERS_DIR/$name" '*.Dockerfile' && return 0
-    fi
-
-    # Priority 4-6: SOURCE_DIR
-    if [[ -n "$SOURCE_DIR" ]]; then
-        try_search "$SOURCE_DIR" "Dockerfile" && return 0
-        try_search "$SOURCE_DIR" "${name}.Dockerfile" && return 0
-        try_search "$SOURCE_DIR" '*.Dockerfile' && return 0
-    fi
-
-    # Fallback: any in BUILDERS_DIR
-    if [[ -n "$BUILDERS_DIR" ]]; then
-        try_search "$BUILDERS_DIR" "${name}.Dockerfile" && return 0
-        try_search "$BUILDERS_DIR" '*.Dockerfile' && return 0
-    fi
+    done
 
     return 1
 }
