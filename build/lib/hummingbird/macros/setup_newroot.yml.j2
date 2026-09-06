@@ -11,6 +11,7 @@ ENV _installroot_unshared=1
 # and ARGs declared between FROMs only apply to the preceding stage.
 ARG NEWROOT=/new-root-fs
 ARG DNF_CACHE=/tmp/dnf-cache
+{%- if distro == "hummingbird" %}
 ARG DNF_FLAGS="-y \
       --use-host-config \
       --nodocs \
@@ -19,6 +20,30 @@ ARG DNF_FLAGS="-y \
       --setopt=system_cachedir=${DNF_CACHE} \
       --setopt=logdir=${DNF_CACHE} \
       --setopt=varsdir=${DNF_CACHE}"
+{%- else %}
+# Non-hummingbird distro: keep the single hummingbird-builder image (it
+# carries dnf-installroot, verify-compliance, chunkah), but install packages
+# from this distro's repos instead of the baked-in hummingbird repos.
+# WHY no quotes around the glob: DNF_FLAGS is expanded unquoted
+# (dnf-installroot ${NEWROOT} ${DNF_FLAGS}), and quote removal does not apply
+# to variable expansions — '--disablerepo='x*'' would reach dnf with literal
+# quotes and fail with "No matching repositories". The --flag= prefix means
+# the bare glob can never match a real file, so it is safe unquoted.
+ARG DNF_FLAGS="-y \
+      --use-host-config \
+      --disablerepo=public-hummingbird* \
+      --nodocs \
+      --setopt=install_weak_deps=False \
+      --setopt=cachedir=${DNF_CACHE} \
+      --setopt=system_cachedir=${DNF_CACHE} \
+      --setopt=logdir=${DNF_CACHE} \
+      --setopt=varsdir=${DNF_CACHE}"
+{%- if default_variant_repos is defined and distro in default_variant_repos %}
+{%- for repo in default_variant_repos[distro] %}
+COPY yum-repos/{{ repo }} /etc/yum.repos.d/{{ repo }}
+{%- endfor %}
+{%- endif %}
+{%- endif %}
 {{ main_packages_arg() }}
 {{- build_packages_arg() }}
 ARG TARGETARCH
@@ -43,11 +68,17 @@ RUN mkdir -p ${NEWROOT}/etc/dnf/libdnf5.conf.d && \
 
 {%- if rpm_packages is defined and rpm_packages['build-deps'] is defined and rpm_packages['build-deps'] %}
 # Install build dependencies in the builder layer
+{%- if distro == "hummingbird" %}
 RUN dnf install -y ${BUILD_PACKAGES}
+{%- else %}
+RUN dnf install -y --disablerepo=public-hummingbird* ${BUILD_PACKAGES}
+{%- endif %}
 {%- endif %}
 
+{%- if distro == "hummingbird" %}
 # Import Hummingbird GPG key into the newroot for package verification
 RUN rpmkeys --import /etc/pki/rpm-gpg/RPM-GPG-KEY-hummingbird-release --root "${NEWROOT}"
+{%- endif %}
 
 # Install filesystem early, so that early container setup works
 # It gets pulled in later by glibc anyway, so no additional dependency

@@ -311,6 +311,17 @@ PY
 
     local hbgen_dir="${hbgen}/images/${image_name}"
 
+    # Distro repo files must live inside the build context: non-hummingbird
+    # Containerfiles COPY yum-repos/<distro>.repo into the single
+    # hummingbird-builder stage so dnf-installroot installs from the distro's
+    # repos instead of the baked-in hummingbird repos. The hbgen-level
+    # yum-repos symlink above serves rpms.in.yaml/get_rpm_versions.sh only
+    # (outside the container build context).
+    if [[ -d "${HUMMINGBIRD_DIR}/yum-repos" ]]; then
+        mkdir -p "${hbgen_dir}/yum-repos"
+        cp "${HUMMINGBIRD_DIR}"/yum-repos/*.repo "${hbgen_dir}/yum-repos/"
+    fi
+
     # Extra build-context files (rootfs for config/scripts, src for source
     # builds) land in the hbgen image tree, which is the build context.
     # prebuildfs is the shared library set vendored alongside the machinery;
@@ -563,6 +574,17 @@ PY
 
     # Chunkah build: engine applies the workaround flags (Phase 2 hook)
     CONFIG[CHUNKAH]="true"
+
+    # Default SOURCE_DATE_EPOCH: the rendered Containerfile declares
+    # ARG SOURCE_DATE_EPOCH (upstream reproducibility hook) and the engine
+    # warns when no value is passed. Prefer the builder repo's last commit
+    # time so rebuilds of the same source are stable; fall back to now.
+    # Explicit env wins. ci_build_and_push auto-passes CONFIG[ARG_*] from env.
+    if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
+        SOURCE_DATE_EPOCH="$(git -C "${image_dir}" log -1 --format=%ct 2>/dev/null || date +%s)"
+    fi
+    export SOURCE_DATE_EPOCH
+    CONFIG["ARG_SOURCE_DATE_EPOCH"]="present"
 
     local registry_summary="${registry_list:-$(IFS=,; echo "${reg_entries[*]}")}"
     log_info "Hummingbird config: image=${CONFIG[IMAGE_NAME]} distro=${distro} version=${CONFIG[VERSION]} tags='${CONFIG[CUSTOM_TAGS]:-}' registries=${registry_summary} platforms=${platforms:-native} skip_push=${skip_push}"
