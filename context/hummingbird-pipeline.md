@@ -193,17 +193,25 @@ and RPM removals. The wrapper recursively binds the **build container's** `/proc
 source submount restrictions and makes each bind tree private. RPM scriptlets
 therefore see a working `/proc/self/exe` even under Rosetta/QEMU.
 
-Mounts are detached in reverse order on success, command failure or interruption;
-only mounts created by this transaction are touched. The original command status
-is preserved, and failed cleanup cannot produce a successful layer. These are
-transient views, **not files copied from the tooling image into newroot**. The
-helper relies on the build container's existing mount namespace instead of
-creating an additional nested `unshare` namespace.
+Each transaction runs in a **private mount namespace**, entered with
+`unshare --mount --propagation private`. No new user or PID namespace is created.
+The worker verifies that its mount namespace differs from the caller before
+mounting anything. Its proc/sys/dev/runtime views are never visible in the
+caller's namespace; the kernel manages their lifetime instead of relying on
+`umount` being permitted for locked or policy-protected proc/sys trees.
+
+Backing-file changes (installed packages and seed content) survive worker exit;
+runtime mounts do not leak into subsequent cleanup, COPY or archive operations.
+The caller checks its runtime paths before and after the transaction, preserving
+the command status and failing if mounts unexpectedly remain visible. Namespace
+creation failures are reported without running or retrying RPM in a shared
+namespace. These are transient views, **not copied tooling-image content**.
 
 Portable final-stage COPY does not eliminate these build-time permissions:
 
 - **Podman:** the engine adds `--cap-add=SYS_ADMIN` for mount-aware rootfs recipes,
   independently of chunkah. Direct `podman build` callers must supply it too.
+  The runner must allow a mount-only `unshare`; util-linux supplies the command.
 - **Docker:** set `ALLOW_INSECURE_ROOTFS=true` explicitly for trusted builds on an
   isolated runner. The engine uses a dedicated BuildKit docker-container builder
   with `security.insecure` permitted, and a temporary `docker/dockerfile:1-labs`

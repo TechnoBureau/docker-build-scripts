@@ -82,7 +82,10 @@ DEBUG=true main_build -i curl
 | `rosetta error: Unable to open /proc/self/exe: 2`, failed `ldconfig` or crypto-policy RPM scriptlets | The transaction is missing procfs inside newroot. Regenerate `.hbgen` so every rootfs transaction uses `hb-rootfs exec`; the outer builder's `/proc` is not visible automatically after RPM chroots |
 | `cannot mount ... SYS_ADMIN` | Use the shared engine's Podman path, or add `--cap-add=SYS_ADMIN` to a direct Podman build. The runner must permit mounts; this applies with or without chunkah |
 | `ALLOW_INSECURE_ROOTFS=true ... security.insecure` | Docker rootfs builds require explicit opt-in for trusted inputs. The library prepares the limited RUN flags and dedicated BuildKit builder; custom builders must allow the entitlement too |
-| `unable to unmount transaction path` | Stop the build; do not export a layer with runtime mounts still attached. Inspect the runner's mount restrictions and lingering processes |
+| `unable to unmount transaction path .../sys` or `.../proc` | This message comes from the older manual-unmount helper. Regenerate `.hbgen` with the current `rootfs.sh`; transactions now use a private mount namespace and do not depend on proc/sys unmount permission |
+| `unshare failed: Operation not permitted` | The runner blocks private mount namespaces. Confirm the build has `SYS_ADMIN` (or the explicit BuildKit entitlement) and supports mount-only `unshare`; use a suitable/native builder if it does not. Do not retry the transaction in the shared namespace |
+| `refusing transaction without a distinct private mount namespace` | Namespace entry did not isolate the worker; stop before running RPM and inspect the runner/emulator configuration |
+| `after private transaction: runtime path is already mounted` | Caller-visible isolation was violated. Stop the build; never suppress this check or unmount caller-owned paths blindly |
 
 The `policy` helper deliberately avoids chroot execution, but upstream RPM
 scriptlets still execute during package installation. Never fix Rosetta failures

@@ -48,97 +48,113 @@ hb_rootfs_check_base() {
     esac
 }
 
-# EXIT handler for hb_rootfs_exec's subshell, never for the sourcing caller.
-hb_rootfs_unmounts() {
-    local status="$1" target index
-    shift
-    local -a mounted=("$@")
-    trap - EXIT HUP INT TERM
-    for ((index=${#mounted[@]}-1; index>=0; index--)); do
-        target="${mounted[$index]}"
-        if ! umount --recursive "$target" 2>/dev/null; then
-            # User namespaces can inherit locked child mounts (e.g. masked
-            # /proc paths). Detach our private bind tree as a unit in that case;
-            # do not try to unmount the source container's /proc or /dev.
-            if mountpoint -q "$target"; then
-                umount --lazy "$target" 2>/dev/null || true
-            fi
+# One list for preflight, the private worker and the caller-side leak check.
+readonly -a HB_ROOTFS_RUNTIME_PATHS=(proc sys dev run tmp var/tmp)
+
+hb_rootfs_check_runtime_paths() {
+    local root="$1" phase="$2" path target
+    for path in "${HB_ROOTFS_RUNTIME_PATHS[@]}"; do
+        target="$root/$path"
+        hb_rootfs_beneath "$root" "$target" || return 1
+        if [[ -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
+            hb_rootfs_error "refusing non-directory/symlink mount target $target"
+            return 1
         fi
-        if mountpoint -q "$target"; then
-            hb_rootfs_error "unable to unmount transaction path $target" || true
-            [[ "$status" -ne 0 ]] || status=1
+        if mountpoint -q "$target" 2>/dev/null; then
+            hb_rootfs_error "$phase: runtime path is already mounted: $target"
+            return 1
         fi
     done
-    exit "$status"
+}
+
+hb_rootfs_mount_namespace() {
+    local namespace
+    namespace="$(readlink /proc/self/ns/mnt)" || return 1
+    [[ "$namespace" =~ ^mnt:\[[0-9]+\]$ ]] || {
+        hb_rootfs_error "cannot identify the current mount namespace: $namespace"
+        return 1
+    }
+    printf '%s\n' "$namespace"
 }
 
 hb_rootfs_exec() (
-    local root="$1" path target tool status=0
+    local root="$1" tool parent_namespace script status=0
     shift
     [[ $# -gt 0 ]] || { hb_rootfs_error 'exec requires ROOT COMMAND [ARGS...]'; exit 1; }
-    local -a mounted=() paths=(proc sys dev run tmp var/tmp)
-    # Each generated RUN already has its own container/mount namespace. Do not
-    # create another unshare/pid namespace here: Rosetta/runner policies can
-    # reject it even when mounting inside the build container is permitted.
-    trap 'hb_rootfs_unmounts "$?" "${mounted[@]}"' EXIT
+    for tool in unshare mount mountpoint readlink; do
+        command -v "$tool" >/dev/null || {
+            hb_rootfs_error "exec requires mount-namespace support ($tool is missing)"
+            exit 1
+        }
+    done
+    hb_rootfs_check_runtime_paths "$root" 'before transaction' || exit 1
+    parent_namespace="$(hb_rootfs_mount_namespace)" || exit 1
+    script="$(realpath -- "${BASH_SOURCE[0]}")" || exit 1
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
-    for tool in mount umount mountpoint; do
-        command -v "$tool" >/dev/null || {
-            hb_rootfs_error "exec needs util-linux ($tool is missing)"; exit 1;
-        }
-    done
-    # Validate all destinations before the first mount. An inherited symlink
-    # must not redirect mounts outside newroot, and caller-owned mounts must
-    # not enter our cleanup ledger.
-    for path in "${paths[@]}"; do
+    # Only CLONE_NEWNS: no nested user or PID namespace. Keep RPM/ldconfig and
+    # emulators in the build container's existing user/PID namespaces.
+    # Propagation is private recursively BEFORE the worker starts mounting.
+    # Do not retry outside this namespace if unshare or the transaction fails:
+    # replaying a partially completed RPM transaction is unsafe.
+    unshare --mount --propagation private "$BASH" "$script" \
+        __exec_in_mountns "$root" "$parent_namespace" "$@" || status=$?
+
+    # The kernel owns the worker's mount lifetime. Locked or policy-protected
+    # proc/sys trees need no explicit umount; the caller never sees them. Check
+    # that invariant before allowing subsequent cleanup/COPY/archive commands.
+    if ! hb_rootfs_check_runtime_paths "$root" 'after private transaction'; then
+        [[ "$status" -ne 0 ]] || status=1
+    fi
+    exit "$status"
+)
+
+hb_rootfs_exec_in_mountns() {
+    [[ $# -ge 3 ]] || { hb_rootfs_error 'private worker requires ROOT PARENT_NAMESPACE COMMAND'; return 1; }
+    local root="$1" parent_namespace="$2" namespace path target mode
+    shift 2
+    namespace="$(hb_rootfs_mount_namespace)" || return 1
+    if [[ ! "$parent_namespace" =~ ^mnt:\[[0-9]+\]$ || "$namespace" == "$parent_namespace" ]]; then
+        hb_rootfs_error 'refusing transaction without a distinct private mount namespace'
+        return 1
+    fi
+    hb_rootfs_check_runtime_paths "$root" 'private worker' || return 1
+
+    for path in "${HB_ROOTFS_RUNTIME_PATHS[@]}"; do
         target="$root/$path"
-        hb_rootfs_beneath "$root" "$target" || exit 1
-        if [[ -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
-            hb_rootfs_error "refusing non-directory/symlink mount target $target"; exit 1
-        fi
-        if mountpoint -q "$target" 2>/dev/null; then
-            hb_rootfs_error "transaction target is already mounted: $target"; exit 1
-        fi
-    done
-    for path in "${paths[@]}"; do
-        target="$root/$path"
-        mkdir -p -- "$target" || exit 1
+        mkdir -p -- "$target" || return 1
         case "$path" in
             proc|sys|dev)
-                # Recursive binds preserve the build container's masked and
-                # read-only submounts. A plain bind could expose masked paths.
+                # Recursive binds retain the container's masked/read-only child
+                # mounts. These views exist only in this private mount namespace,
+                # not as files in newroot or mounts in the caller's namespace.
                 if ! mount --rbind "/$path" "$target"; then
                     hb_rootfs_error "cannot mount $target; use Podman --cap-add=SYS_ADMIN or an explicitly entitled BuildKit runner"
-                    exit 1
+                    return 1
                 fi
-                mounted+=("$target")
-                mount --make-rprivate "$target" || exit 1
                 ;;
             *)
-                local mode=1777
+                mode=1777
                 [[ "$path" != run ]] || mode=0755
                 if ! mount -t tmpfs -o "mode=$mode,nosuid,nodev" tmpfs "$target"; then
                     hb_rootfs_error "cannot mount $target; the build runner needs mount permission (SYS_ADMIN)"
-                    exit 1
+                    return 1
                 fi
-                mounted+=("$target")
                 ;;
         esac
     done
-    # RPM chroots before executing scriptlets. Rosetta needs this kernel-backed
-    # executable link there, even though the outer builder already has /proc.
     if [[ ! -r "$root/proc/self/exe" ]]; then
         hb_rootfs_error "procfs is not usable inside $root (missing /proc/self/exe)"
-        exit 1
+        return 1
     fi
-    # Preserve the command's real exit status; neither cleanup nor a later RUN
-    # may turn a failed RPM transaction into an apparently successful layer.
-    "$@" || status=$?
-    exit "$status"
-)
+    # No user-space unmount trap: proc/sys may be locked or unmount denied even
+    # though mounting is allowed. Exiting the worker releases its namespace;
+    # backing-file changes survive and runtime mounts cannot leak to the caller.
+    # exec also preserves command status and forwards signals without a wrapper.
+    exec "$@"
+}
 
 hb_rootfs_reset() {
     local root="$1"
@@ -212,6 +228,7 @@ main() {
     hb_rootfs_validate "$root" || return 1
     case "$action" in
         exec) shift 2; hb_rootfs_exec "$root" "$@" ;;
+        __exec_in_mountns) shift 2; hb_rootfs_exec_in_mountns "$root" "$@" ;;
         reset) hb_rootfs_reset "$root" ;;
         check-base) hb_rootfs_check_base "$root" "${3:-}" ;;
         policy) hb_rootfs_policy "$root" "${3:-}" ;;

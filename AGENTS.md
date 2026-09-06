@@ -151,9 +151,11 @@ HB_PYTHON=python3 ./tests/run-tests.sh
 15. **Unresolved version tags are not published.** `unknown` and `unknown-*`
     are filtered before `TAG_STRATEGY=custom`. *(F28–F32)*
 
-16. **RPM installroot commands run with temporary proc/dev/runtime mounts.**
-    Use `hb-rootfs exec`, not bare installroot transactions or disabled scriptlets.
-    Cleanup preserves command failures and leaves no runtime mounts in the image.
+16. **RPM transactions use a private mount namespace with proc/dev/runtime views.**
+    Use `hb-rootfs exec`, not bare installroot transactions, disabled scriptlets or
+    shared-namespace unmount retries. No nested user/PID namespace is requested.
+    Preserve command failures and verify no runtime mounts are visible to the
+    caller. Namespace failures must not replay the RPM command without isolation.
     Permissions are independent of chunkah; Docker elevation requires explicit
     opt-in. *(RootfsTransactionTests; RootfsMountNamespaceTests; EngineTests)*
 

@@ -272,9 +272,12 @@ Docker saves an OCI archive (`BUILD_OUTPUT_DIR`, default `.ci-output/`) and Podm
 keeps a local manifest.
 
 RPM scriptlets need runtime filesystems inside newroot. Transactions use
-`hb-rootfs exec` to mount `/proc`, `/sys`, `/dev` and temporary runtime directories,
-then detach them even on failure. This fixes the missing `/proc/self/exe` condition
-for chrooted Rosetta execution without copying builder content or disabling scripts.
+`hb-rootfs exec` to mount `/proc`, `/sys`, `/dev` and temporary runtime directories
+inside a transaction-private mount namespace. The caller never sees those mounts,
+and cleanup does not depend on permission to unmount protected proc/sys trees.
+This supplies `/proc/self/exe` for chrooted execution without copying builder
+content or disabling scripts. The runner must support mount-only `unshare`; no
+new user or PID namespace is requested.
 Podman builds receive `--cap-add=SYS_ADMIN` automatically, independent of chunkah.
 Docker requires **explicit** `ALLOW_INSECURE_ROOTFS=true` for trusted builds on an
 isolated runner; the engine prepares the entitled BuildKit builder and limits
