@@ -271,6 +271,16 @@ indexes; Podman joins per-platform image IDs into one manifest. With no push,
 Docker saves an OCI archive (`BUILD_OUTPUT_DIR`, default `.ci-output/`) and Podman
 keeps a local manifest.
 
+RPM scriptlets need runtime filesystems inside newroot. Transactions use
+`hb-rootfs exec` to mount `/proc`, `/sys`, `/dev` and temporary runtime directories,
+then detach them even on failure. This fixes the missing `/proc/self/exe` condition
+for chrooted Rosetta execution without copying builder content or disabling scripts.
+Podman builds receive `--cap-add=SYS_ADMIN` automatically, independent of chunkah.
+Docker requires **explicit** `ALLOW_INSECURE_ROOTFS=true` for trusted builds on an
+isolated runner; the engine prepares the entitled BuildKit builder and limits
+insecure RUN flags to rootfs transactions. Custom `BUILDX_BUILDER` instances need
+the matching daemon entitlement. See the pipeline document for the security boundary.
+
 **FIPS packages/policy are not a certification claim.** Validate module versions,
 application crypto use, and FIPS host/runtime configuration before deployment.
 Full settings and package lists: [Hummingbird pipeline](context/hummingbird-pipeline.md).

@@ -176,6 +176,22 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("FROM scratch", cf)
         self.assertIn("COPY --from=builder ${NEWROOT}/ /", cf)
 
+    def test_all_installroot_rpm_transactions_use_the_mount_wrapper(self):
+        for distro in ("hummingbird", "ubi9", "ubi10"):
+            with self.subTest(distro=distro):
+                cf, _, _ = self.render({
+                    "base_image": "example.com/base:1",
+                    "rpm_packages": {"all": [{"name": "arm-runtime", "arches": {"only": "aarch64"}}]},
+                    "remove_rpms_from_newroot": ["example-package"],
+                }, distro)
+                commands = re.sub(r"\\\n", " ", cf).splitlines()
+                transactions = [line for line in commands if line.startswith("RUN ") and
+                                ('--installroot="${NEWROOT}"' in line or 'rpm --root "${NEWROOT}"' in line)]
+                self.assertEqual(len(transactions), 5)  # bootstrap, upgrade, main, arch, removal
+                self.assertTrue(all('hb-rootfs exec "${NEWROOT}"' in line for line in transactions))
+                self.assertNotIn("noscripts", cf)
+                self.assertNotIn("nopost", cf)
+
     def test_seed_then_upgrade_then_install_order_is_explicit(self):
         cf, _, _ = self.render({"base_image": "example.com/ubi9/base:1", "rpm_packages": {"all": ["curl"]}})
         self.assertIn("FROM example.com/ubi9/base:1 AS hb_base", cf)

@@ -22,7 +22,8 @@ the test run itself is offline.
 | `hummingbird/run-tests.sh` | 100 assertions: work tree, merges, matrix restrictions, naming, per-distro versions, rendering, errors, bash-driver contract |
 | `hummingbird/test_build_contract.py` | FIPS-enabled defaults on Hummingbird/UBI9/UBI10; amd64/arm64/both; package-set parity; base selection, seed/upgrade/install order; portable/optional chunkah output; actual rootfs helper operations |
 | `hummingbird/test_versions.py` | Distro × target-architecture queries, missing FIPS packages, conflicting versions, cache fingerprint/TTL isolation; real query shell with a stub executable |
-| `test_build_engine.py` | Real `ci_build_and_push` with recording Docker/Podman executables: single/multi targets, manifests, no-push output, failed builds/pushes, chunkah cache isolation, base registry parsing |
+| `hummingbird/test_rootfs_transactions.py` | Temporary runtime mounts, preserved seed content, RPM failures/signals, reverse cleanup and locked-submount handling. Also performs real native mount/chroot probes in isolated Linux user/mount namespaces when available |
+| `test_build_engine.py` | Real `ci_build_and_push` with recording Docker/Podman executables: single/multi targets, manifests, no-push output, failed builds/pushes, chunkah cache isolation, base registry parsing, Podman mount capabilities and opt-in BuildKit rootfs permissions |
 
 Python suites use `unittest` (no additional test framework). Subtests iterate the
 supported distro/platform/engine combinations. Engine stubs are deliberately quiet
@@ -63,6 +64,10 @@ operations and engine command contracts. It does **not** validate:
 - actual DNF transactions or RPM scriptlets in a container;
 - QEMU/remote workers, base-image manifests or the builder image's availability;
 - a registry push, real crypto-provider operation, OSCAP results or FIPS certification.
+
+The native namespace probe tests actual `/proc/self/exe` visibility in a chroot
+and cleanup on success/failure. It is skipped where Linux user/mount namespaces
+are unavailable; it is **not** a Rosetta, QEMU or RPM transaction test.
 
 Before releasing, run representative real builds on a suitable container runner:
 Hummingbird/UBI9/UBI10 × amd64/arm64/both, empty and base-seeded rootfs. Inspect

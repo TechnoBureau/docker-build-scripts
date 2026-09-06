@@ -84,7 +84,7 @@ custom templates but are **not automatically copied into newroot**.
 | `hb_versions.py` | Version-query plan, result validation and request-scoped cache |
 | `get_rpm_versions.sh` | Executes that query plan with the container engine |
 | `generate_jinja2.py` | Template context, labels, tags, OSCAP tailoring |
-| `rootfs.sh` | Image-side reset, base validation, crypto-policy setup and cleanup |
+| `rootfs.sh` | Image-side reset, mount-scoped transactions, base validation, crypto-policy setup and cleanup |
 | `ci-platforms.sh` | Shared Docker/Podman platform execution and manifests |
 
 Bash orchestrates; Python resolves structured data. Macros render already-resolved
@@ -129,9 +129,10 @@ Additional `fips` and `<distro>/fips` package groups extend that baseline, inclu
 for `default` and composite builder variants. `fips: false` is an explicit opt-out
 for non-FIPS-named variants. Contradictory crypto policies are rejected.
 
-The rootfs helper installs the selected distro's policy definitions without
-executing foreign rootfs binaries; it fails if FIPS definitions/provider are
-missing. Scanning and FIPS policy selection are independent. **FIPS packages and
+The helper's `policy` subcommand installs the selected distro's policy definitions
+without executing foreign rootfs binaries; it fails if FIPS definitions/provider
+are missing. This does not replace RPM scriptlets: package transactions still
+execute them inside newroot and require its temporary runtime mounts. Scanning and FIPS policy selection are independent. **FIPS packages and
 policy are not a certification claim**: validated module versions, application
 crypto usage, and a suitably configured FIPS host/runtime still need verification.
 
@@ -182,6 +183,38 @@ Build dependencies—including architecture-specific ones—stay out of the runt
 rootfs. DNF metadata caches are separate from newroot and scoped by distro/arch.
 The portable final stage creates an explicit dependency on the builder; it never
 reads a shared host-side OCI archive.
+
+### Transaction runtime filesystems and permissions
+
+Every installroot transaction uses `hb-rootfs exec "${NEWROOT}" COMMAND ...`,
+including the filesystem bootstrap, base upgrades, architecture-specific installs
+and RPM removals. The wrapper recursively binds the **build container's** `/proc`,
+`/sys` and `/dev`, and mounts temporary `/run`, `/tmp` and `/var/tmp`. It preserves
+source submount restrictions and makes each bind tree private. RPM scriptlets
+therefore see a working `/proc/self/exe` even under Rosetta/QEMU.
+
+Mounts are detached in reverse order on success, command failure or interruption;
+only mounts created by this transaction are touched. The original command status
+is preserved, and failed cleanup cannot produce a successful layer. These are
+transient views, **not files copied from the tooling image into newroot**. The
+helper relies on the build container's existing mount namespace instead of
+creating an additional nested `unshare` namespace.
+
+Portable final-stage COPY does not eliminate these build-time permissions:
+
+- **Podman:** the engine adds `--cap-add=SYS_ADMIN` for mount-aware rootfs recipes,
+  independently of chunkah. Direct `podman build` callers must supply it too.
+- **Docker:** set `ALLOW_INSECURE_ROOTFS=true` explicitly for trusted builds on an
+  isolated runner. The engine uses a dedicated BuildKit docker-container builder
+  with `security.insecure` permitted, and a temporary `docker/dockerfile:1-labs`
+  recipe copy with `RUN --security=insecure` only on mount-wrapper instructions.
+  Ordinary RUNs remain sandboxed and the original Containerfile is unchanged.
+  Single-arch builds use buildx `--load`; multi-arch output handling is unchanged.
+  If `BUILDX_BUILDER` is supplied, its operator must configure the daemon with
+  `--allow-insecure-entitlement security.insecure`.
+
+Do not bypass failures with `noscripts`, disabled post-transactions or `|| true`.
+Custom templates must wrap additional newroot RPM operations the same way.
 
 With `chunkah: true`, the engine requires Podman, serializes architectures and
 disables layer-cache replay because a bind-mount archive is not a cached layer

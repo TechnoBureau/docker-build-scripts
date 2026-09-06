@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Image-side operations, with no YAML parsing or container-engine dependencies.
-# Invoked from the generated Containerfile as: hb-rootfs reset|check-base|policy|cleanup ROOT [DISTRO|POLICY]
+# Invoked from the generated Containerfile as: hb-rootfs reset|check-base|policy|cleanup ROOT [DISTRO|POLICY]; exec ROOT COMMAND [ARGS...]
 set -euo pipefail
 
 hb_rootfs_error() { printf 'hb-rootfs: %s\n' "$*" >&2; return 1; }
@@ -47,6 +47,98 @@ hb_rootfs_check_base() {
         *) hb_rootfs_error "base image ID=$id VERSION_ID=$version does not match requested distro $distro" ;;
     esac
 }
+
+# EXIT handler for hb_rootfs_exec's subshell, never for the sourcing caller.
+hb_rootfs_unmounts() {
+    local status="$1" target index
+    shift
+    local -a mounted=("$@")
+    trap - EXIT HUP INT TERM
+    for ((index=${#mounted[@]}-1; index>=0; index--)); do
+        target="${mounted[$index]}"
+        if ! umount --recursive "$target" 2>/dev/null; then
+            # User namespaces can inherit locked child mounts (e.g. masked
+            # /proc paths). Detach our private bind tree as a unit in that case;
+            # do not try to unmount the source container's /proc or /dev.
+            if mountpoint -q "$target"; then
+                umount --lazy "$target" 2>/dev/null || true
+            fi
+        fi
+        if mountpoint -q "$target"; then
+            hb_rootfs_error "unable to unmount transaction path $target" || true
+            [[ "$status" -ne 0 ]] || status=1
+        fi
+    done
+    exit "$status"
+}
+
+hb_rootfs_exec() (
+    local root="$1" path target tool status=0
+    shift
+    [[ $# -gt 0 ]] || { hb_rootfs_error 'exec requires ROOT COMMAND [ARGS...]'; exit 1; }
+    local -a mounted=() paths=(proc sys dev run tmp var/tmp)
+    # Each generated RUN already has its own container/mount namespace. Do not
+    # create another unshare/pid namespace here: Rosetta/runner policies can
+    # reject it even when mounting inside the build container is permitted.
+    trap 'hb_rootfs_unmounts "$?" "${mounted[@]}"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    for tool in mount umount mountpoint; do
+        command -v "$tool" >/dev/null || {
+            hb_rootfs_error "exec needs util-linux ($tool is missing)"; exit 1;
+        }
+    done
+    # Validate all destinations before the first mount. An inherited symlink
+    # must not redirect mounts outside newroot, and caller-owned mounts must
+    # not enter our cleanup ledger.
+    for path in "${paths[@]}"; do
+        target="$root/$path"
+        hb_rootfs_beneath "$root" "$target" || exit 1
+        if [[ -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
+            hb_rootfs_error "refusing non-directory/symlink mount target $target"; exit 1
+        fi
+        if mountpoint -q "$target" 2>/dev/null; then
+            hb_rootfs_error "transaction target is already mounted: $target"; exit 1
+        fi
+    done
+    for path in "${paths[@]}"; do
+        target="$root/$path"
+        mkdir -p -- "$target" || exit 1
+        case "$path" in
+            proc|sys|dev)
+                # Recursive binds preserve the build container's masked and
+                # read-only submounts. A plain bind could expose masked paths.
+                if ! mount --rbind "/$path" "$target"; then
+                    hb_rootfs_error "cannot mount $target; use Podman --cap-add=SYS_ADMIN or an explicitly entitled BuildKit runner"
+                    exit 1
+                fi
+                mounted+=("$target")
+                mount --make-rprivate "$target" || exit 1
+                ;;
+            *)
+                local mode=1777
+                [[ "$path" != run ]] || mode=0755
+                if ! mount -t tmpfs -o "mode=$mode,nosuid,nodev" tmpfs "$target"; then
+                    hb_rootfs_error "cannot mount $target; the build runner needs mount permission (SYS_ADMIN)"
+                    exit 1
+                fi
+                mounted+=("$target")
+                ;;
+        esac
+    done
+    # RPM chroots before executing scriptlets. Rosetta needs this kernel-backed
+    # executable link there, even though the outer builder already has /proc.
+    if [[ ! -r "$root/proc/self/exe" ]]; then
+        hb_rootfs_error "procfs is not usable inside $root (missing /proc/self/exe)"
+        exit 1
+    fi
+    # Preserve the command's real exit status; neither cleanup nor a later RUN
+    # may turn a failed RPM transaction into an apparently successful layer.
+    "$@" || status=$?
+    exit "$status"
+)
 
 hb_rootfs_reset() {
     local root="$1"
@@ -119,11 +211,12 @@ main() {
     local action="${1:-}" root="${2:-}"
     hb_rootfs_validate "$root" || return 1
     case "$action" in
+        exec) shift 2; hb_rootfs_exec "$root" "$@" ;;
         reset) hb_rootfs_reset "$root" ;;
         check-base) hb_rootfs_check_base "$root" "${3:-}" ;;
         policy) hb_rootfs_policy "$root" "${3:-}" ;;
         cleanup) hb_rootfs_cleanup "$root" ;;
-        *) hb_rootfs_error 'usage: hb-rootfs reset|check-base|policy|cleanup ROOT [DISTRO|POLICY]' ;;
+        *) hb_rootfs_error 'usage: hb-rootfs reset|check-base|policy|cleanup ROOT [DISTRO|POLICY]; exec ROOT COMMAND [ARGS...]' ;;
     esac
 }
 main "$@"

@@ -77,6 +77,20 @@ DEBUG=true main_build -i curl
 
 ## 4. Rootfs and base images
 
+| Message/symptom | Action |
+| --- | --- |
+| `rosetta error: Unable to open /proc/self/exe: 2`, failed `ldconfig` or crypto-policy RPM scriptlets | The transaction is missing procfs inside newroot. Regenerate `.hbgen` so every rootfs transaction uses `hb-rootfs exec`; the outer builder's `/proc` is not visible automatically after RPM chroots |
+| `cannot mount ... SYS_ADMIN` | Use the shared engine's Podman path, or add `--cap-add=SYS_ADMIN` to a direct Podman build. The runner must permit mounts; this applies with or without chunkah |
+| `ALLOW_INSECURE_ROOTFS=true ... security.insecure` | Docker rootfs builds require explicit opt-in for trusted inputs. The library prepares the limited RUN flags and dedicated BuildKit builder; custom builders must allow the entitlement too |
+| `unable to unmount transaction path` | Stop the build; do not export a layer with runtime mounts still attached. Inspect the runner's mount restrictions and lingering processes |
+
+The `policy` helper deliberately avoids chroot execution, but upstream RPM
+scriptlets still execute during package installation. Never fix Rosetta failures
+by disabling those scriptlets. For clearer multi-arch diagnosis, temporarily set
+`PARALLEL_PLATFORMS=false`; interleaved worker logs can otherwise show another
+platform continuing after one worker failed.
+
+
 - `hb-rootfs reset` removes the entire validated newroot, including dotfiles and
   stale RPM databases. It refuses protected paths, symlinked paths and `..`.
 - `base image ID=... does not match requested distro` means a seed and repository
@@ -85,7 +99,7 @@ DEBUG=true main_build -i curl
   fix the package/repository inputs. The helper will not write a successful FIPS
   state for a rootfs lacking its provider/definitions.
 - Composite policies such as `FIPS:OSPP` need pre-generated definitions in the
-  rootfs. The helper does not execute foreign policy-generation binaries.
+  rootfs. The `policy` subcommand does not execute foreign policy-generation binaries.
 - `rootfs/` in the build context is **not** an implicit base. Copy custom files
   deliberately in `Containerfile.j2` after `setup_newroot()`.
 - Seeding copies filesystem content, not base-image `ENV`, `USER`, `ENTRYPOINT`

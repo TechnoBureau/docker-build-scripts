@@ -3,16 +3,16 @@
 # Refresh inherited packages using this distro's repositories before adding
 # the requested runtime/FIPS packages. The seed's RPM database is preserved.
 RUN --mount=type=cache,id=hb-dnf-{{ distro }}-${TARGETARCH},target=${DNF_CACHE},sharing=locked \
-    dnf ${DNF_FLAGS} --installroot="${NEWROOT}" upgrade
+    hb-rootfs exec "${NEWROOT}" dnf ${DNF_FLAGS} --installroot="${NEWROOT}" upgrade
 {% endif -%}
 RUN --mount=type=cache,id=hb-dnf-{{ distro }}-${TARGETARCH},target=${DNF_CACHE},sharing=locked \
-    dnf ${DNF_FLAGS} --installroot="${NEWROOT}" install ${MAIN_PACKAGES}
+    hb-rootfs exec "${NEWROOT}" dnf ${DNF_FLAGS} --installroot="${NEWROOT}" install ${MAIN_PACKAGES}
 {%- if arch_specific_packages %}
 RUN --mount=type=cache,id=hb-dnf-{{ distro }}-${TARGETARCH},target=${DNF_CACHE},sharing=locked \
     case "${TARGETARCH:-$(uname -m)}" in \
 {%- for arch, pkgs in arch_specific_packages | dictsort %}
     {{ arch }}|{{ arch | targetarch }}) \
-        dnf ${DNF_FLAGS} --installroot="${NEWROOT}" install {{ pkgs | join(' ') }} ;; \
+        hb-rootfs exec "${NEWROOT}" dnf ${DNF_FLAGS} --installroot="${NEWROOT}" install {{ pkgs | join(' ') }} ;; \
 {%- endfor %}
     esac
 {%- endif %}

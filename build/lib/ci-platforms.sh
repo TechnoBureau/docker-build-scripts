@@ -53,29 +53,114 @@ ci_save_manifest_artifacts() {
     done
 }
 
+# Runtime requirements are inferred from the actual recipe, not from chunkah or
+# the selected CPU. Native RPM scriptlets also need the installroot's /proc/dev.
+ci_requires_rootfs_mounts() {
+    # No grep | grep -q pipeline: an early match gives the upstream process
+    # SIGPIPE on larger recipes, making detection fail under pipefail.
+    awk '
+        /^[[:space:]]*#/ { next }
+        /(^|[[:space:]])hb-rootfs[[:space:]]+exec([[:space:]]|$)/ { found=1 }
+        END { exit !found }
+    ' "$1"
+}
+
+ci_require_rootfs_entitlement() {
+    [[ "$1" == docker && "${CONFIG[ROOTFS_MOUNTS]:-false}" == true ]] || return 0
+    local allowed="${ALLOW_INSECURE_ROOTFS:-false}"
+    case "${allowed,,}" in
+        true|yes|1|on) return 0 ;;
+        *)
+            log_error 'Rootfs mounts need explicit ALLOW_INSECURE_ROOTFS=true for Docker security.insecure; otherwise use Podman'
+            return 1
+            ;;
+    esac
+}
+
+ci_prepare_buildkit_rootfs_recipe() {
+    # Generated macros use ordinary continued RUN instructions. Only those
+    # invoking the mount wrapper get the privileged entitlement; compiler and
+    # other unrelated stages stay sandboxed. Never edit the caller's file.
+    awk '
+        BEGIN { print "# syntax=docker/dockerfile:1-labs" }
+        function flush() {
+            if (block ~ /^[[:space:]]*[Rr][Uu][Nn][[:space:]]/ &&
+                block ~ /hb-rootfs[[:space:]]+exec[[:space:]]/) {
+                if (block !~ /--security=insecure/) {
+                    sub(/^[[:space:]]*[Rr][Uu][Nn][[:space:]]+/, "RUN --security=insecure ", block)
+                }
+            }
+            printf "%s", block
+            block=""
+        }
+        /^[[:space:]]*#[[:space:]]*syntax[[:space:]]*=/ { next }
+        { block=block $0 "\n" }
+        /\\[[:space:]]*$/ { next }
+        { flush() }
+        END { if (block != "") flush() }
+    ' "$1" > "$2"
+}
+
+ci_run_docker_buildx() (
+    local -a args=("$@")
+    local temp="" file index
+    if [[ "${CONFIG[ROOTFS_MOUNTS]:-false}" == true ]]; then
+        temp="$(mktemp -d)" || exit 1
+        trap 'rm -rf "$temp"' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        file=""
+        for ((index=0; index<${#args[@]}-1; index++)); do
+            if [[ "${args[$index]}" == --file ]]; then
+                file="${args[$((index+1))]}"
+                args[$((index+1))]="$temp/Containerfile"
+                break
+            fi
+        done
+        [[ -n "$file" ]] || { log_error 'BuildKit rootfs build needs a --file recipe'; exit 1; }
+        ci_prepare_buildkit_rootfs_recipe "$file" "$temp/Containerfile" || exit 1
+        if [[ -f "$file.dockerignore" ]]; then
+            cp "$file.dockerignore" "$temp/Containerfile.dockerignore" || exit 1
+        fi
+    fi
+    docker buildx build "${args[@]}"
+)
+
 ci_build_docker_platforms() {
     local context="$1" platforms="$2"
     shift 2
     local -a args=("$@")
-    local img
+    local img rootfs_mounts="${CONFIG[ROOTFS_MOUNTS]:-false}"
     if [[ "${CONFIG[CHUNKAH]:-false}" == true ]]; then
         log_error 'chunkah/oci-archive requires Podman; use chunkah: false (portable assembly) for Docker'
         return 1
     fi
     [[ -z "$platforms" ]] || args+=(--platform "$platforms")
-    if [[ "$platforms" == *,* ]]; then
-        # WHY one buildx invocation: independent `docker build; docker push`
-        # calls under the same tag overwrite each other; they do not create an
-        # index. Buildx publishes the index only after every target succeeds.
+    if [[ "$platforms" == *,* || "$rootfs_mounts" == true ]]; then
+        # One buildx invocation publishes a multi-arch index only after every
+        # target succeeds. Mount-enabled single targets also need BuildKit.
         docker buildx version >/dev/null 2>&1 || {
-            log_error 'Docker multi-platform builds require buildx'; return 1;
+            log_error 'Docker multi-platform/rootfs builds require buildx'; return 1;
         }
-        local builder="${BUILDX_BUILDER:-docker-build-scripts}"
+        local default_builder=docker-build-scripts
+        local -a builder_flags=()
+        if [[ "$rootfs_mounts" == true ]]; then
+            ci_require_rootfs_entitlement docker || return 1
+            default_builder=docker-build-scripts-rootfs
+            builder_flags+=(--buildkitd-flags '--allow-insecure-entitlement security.insecure')
+            args+=(--allow=security.insecure)
+        fi
+        local builder="${BUILDX_BUILDER:-$default_builder}"
         if [[ -z "${BUILDX_BUILDER:-}" ]] && ! docker buildx inspect "$builder" >/dev/null 2>&1; then
-            docker buildx create --name "$builder" --driver docker-container >/dev/null || return 1
+            docker buildx create --name "$builder" --driver docker-container "${builder_flags[@]}" >/dev/null || return 1
         fi
         args=(--builder "$builder" "${args[@]}")
-        if [[ ${#CI_BUILT_IMAGES[@]} -gt 0 ]]; then
+        if [[ "$platforms" != *,* ]]; then
+            args+=(--load)
+            if [[ ${#CI_BUILT_IMAGES[@]} -eq 0 ]]; then
+                args+=(--tag "localhost/${CONFIG[IMAGE_NAME]:-unnamed}:${CONFIG[VERSION]:-latest}")
+            fi
+        elif [[ ${#CI_BUILT_IMAGES[@]} -gt 0 ]]; then
             args+=(--push)
         else
             # Classic Docker cannot --load a multi-arch index. Preserve all
@@ -87,8 +172,14 @@ ci_build_docker_platforms() {
             args+=(--output "type=oci,dest=$CI_IMAGE_ARCHIVE")
             log_info "Multi-platform build without push: OCI archive $CI_IMAGE_ARCHIVE"
         fi
-        docker buildx build "${args[@]}" "$context" || return 1
-        ci_save_manifest_artifacts || return 1
+        ci_run_docker_buildx "${args[@]}" "$context" || return 1
+        if [[ "$platforms" == *,* ]]; then
+            ci_save_manifest_artifacts || return 1
+        else
+            for img in "${CI_BUILT_IMAGES[@]}"; do
+                docker push "$img" || return 1
+            done
+        fi
     else
         if [[ ${#CI_BUILT_IMAGES[@]} -eq 0 ]]; then
             args+=(--tag "localhost/${CONFIG[IMAGE_NAME]:-unnamed}:${CONFIG[VERSION]:-latest}")
@@ -127,12 +218,17 @@ ci_build_podman_platforms() {
     local parallel="${PARALLEL_PLATFORMS:-true}" jobs="${BUILD_JOBS:-4}"
     [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { log_error 'BUILD_JOBS must be a positive integer'; return 1; }
     ((jobs <= 4)) || jobs=4
+    # Mount permissions belong to RPM transactions, not to image assembly.
+    # Portable COPY builds need this as much as the optional chunkah mode.
+    if [[ "${CONFIG[ROOTFS_MOUNTS]:-false}" == true || "${CONFIG[CHUNKAH]:-false}" == true ]]; then
+        args+=(--cap-add=SYS_ADMIN)
+    fi
     if [[ "${CONFIG[CHUNKAH]:-false}" == true ]]; then
         # A bind-mounted archive is not a cached layer output. Replaying a RUN
         # for amd64 after arm64 could reuse the wrong archive, even if it still
         # exists. Disable replay and serialize this explicit legacy mode.
         parallel=false
-        args+=(--no-cache --skip-unused-stages=false --cap-add=SYS_ADMIN
+        args+=(--no-cache --skip-unused-stages=false
                -v "$context:/run/src" --security-opt=label=disable)
         # --jobs makes Buildah resolve the not-yet-written oci-archive early.
     else

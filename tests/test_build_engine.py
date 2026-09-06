@@ -31,6 +31,8 @@ if "--output" in args:
     output = args[args.index("--output") + 1]
     if "dest=" in output:
         pathlib.Path(output.split("dest=", 1)[1]).write_text("OCI output fixture, not a real image")
+if "--file" in args:
+    pathlib.Path(os.environ["RECIPE_LOG"]).write_text(pathlib.Path(args[args.index("--file") + 1]).read_text())
 # Deliberately quiet success: output filters must not turn exit 0 into failure.
 '''
 
@@ -56,23 +58,32 @@ exit "$status"
 
 
 class EngineTests(unittest.TestCase):
-    def run_engine(self, engine, platforms, *, distro="ubi9", push=True, fail="", chunkah=False, parallel=True, global_skip=False):
+    def run_engine(self, engine, platforms, *, distro="ubi9", push=True, fail="", chunkah=False, parallel=True, global_skip=False, rootfs=False, allow_insecure=False):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             for name in ("podman", "docker"):
                 script = work / name
                 script.write_text(STUB)
                 script.chmod(0o755)
-            (work / "Containerfile").write_text("FROM scratch\n")
+            recipe = ('# syntax=docker/dockerfile:1\nFROM scratch\nARG NEWROOT=/new-root-fs\n'
+                      'RUN echo sandboxed\nRUN --mount=type=cache,target=/tmp/cache \\\n'
+                      '    hb-rootfs exec "${NEWROOT}" dnf --installroot="${NEWROOT}" install filesystem\n'
+                      'RUN echo still-sandboxed\n') if rootfs else "FROM scratch\n"
+            (work / "Containerfile").write_text(recipe)
             log = work / "commands.jsonl"
             env = {**os.environ, "PATH": f"{tmp}:{os.environ['PATH']}", "ENGINE_LOG": str(log),
                    "ENGINE_FAIL": fail, "REPO": str(REPO), "TEST_CONTEXT": tmp,
+                   "RECIPE_LOG": str(work / "built.recipe"), "ALLOW_INSECURE_ROOTFS": str(allow_insecure).lower(),
                    "TEST_ENGINE": engine, "TEST_PLATFORMS": platforms, "TEST_DISTRO": distro,
                    "TEST_PUSH": str(push).lower(), "TEST_CHUNKAH": str(chunkah).lower(),
                    "PARALLEL_PLATFORMS": str(parallel).lower(), "INSTALL_BINFMT": "false",
                    "SKIP_PUSH": str(global_skip).lower()}
             result = subprocess.run(["bash", "-c", HARNESS], env=env, text=True, capture_output=True)
             calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            self.last_recipe = (work / "built.recipe").read_text() if (work / "built.recipe").exists() else ""
+            self.assertEqual((work / "Containerfile").read_text(), recipe)
+            self.prepared_recipe_exists = [Path(cmd[cmd.index("--file") + 1]).exists() for cmd in calls
+                                          if "--file" in cmd and cmd[cmd.index("--file") + 1] != str(work / "Containerfile")]
             return result, calls
 
     def test_single_arch_builds_for_each_distro_and_engine(self):
@@ -89,6 +100,64 @@ class EngineTests(unittest.TestCase):
                         self.assertFalse(any("--privileged" in cmd for cmd in calls))
                         if engine == "podman":
                             self.assertIn(f"TARGETARCH={platform.split('/')[1]}", builds[0])
+
+    def test_podman_rootfs_mount_capability_does_not_depend_on_chunkah(self):
+        for chunkah in (False, True):
+            for platforms in ("amd64", "amd64,arm64"):
+                with self.subTest(chunkah=chunkah, platforms=platforms):
+                    result, calls = self.run_engine("podman", platforms, rootfs=True, chunkah=chunkah)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    builds = [cmd for cmd in calls if cmd[1] == "build"]
+                    self.assertTrue(builds)
+                    self.assertTrue(all(cmd.count("--cap-add=SYS_ADMIN") == 1 for cmd in builds))
+                    self.assertFalse(any("--privileged" in cmd for cmd in builds))
+
+    def test_docker_rootfs_mounts_require_an_explicit_security_opt_in(self):
+        result, calls = self.run_engine("docker", "amd64", rootfs=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ALLOW_INSECURE_ROOTFS", result.stderr)
+        self.assertFalse(any(cmd[1] == "build" or cmd[1:3] == ["buildx", "build"] for cmd in calls))
+
+    def test_opted_in_docker_limits_insecure_run_flags_to_rootfs_transactions(self):
+        for platforms in ("amd64", "amd64,arm64"):
+            result, calls = self.run_engine("docker", platforms, rootfs=True, allow_insecure=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            builds = [cmd for cmd in calls if cmd[1:3] == ["buildx", "build"]]
+            self.assertEqual(len(builds), 1)
+            self.assertIn("--allow=security.insecure", builds[0])
+            self.assertIn("--load" if platforms == "amd64" else "--push", builds[0])
+            self.assertTrue(self.last_recipe.startswith("# syntax=docker/dockerfile:1-labs\n"))
+            self.assertIn("RUN --security=insecure --mount=type=cache", self.last_recipe)
+            self.assertIn("RUN echo sandboxed", self.last_recipe)
+            self.assertIn("RUN echo still-sandboxed", self.last_recipe)
+            self.assertEqual(self.last_recipe.count("--security=insecure"), 1)
+            self.assertEqual(self.prepared_recipe_exists, [False])
+            creates = [cmd for cmd in calls if cmd[1:3] == ["buildx", "create"]]
+            # The stub reports a builder already present; custom builders must
+            # be provisioned with the entitlement by their operator.
+            self.assertFalse(creates)
+
+    def test_rootfs_buildkit_builder_creation_enables_the_required_daemon_entitlement(self):
+        result, calls = self.run_engine("docker", "amd64", rootfs=True, allow_insecure=True, fail="buildx inspect")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        creates = [cmd for cmd in calls if cmd[1:3] == ["buildx", "create"]]
+        self.assertEqual(len(creates), 1)
+        self.assertIn("docker-build-scripts-rootfs", creates[0])
+        self.assertIn("--allow-insecure-entitlement security.insecure", creates[0])
+
+    def test_rootfs_docker_failure_cleans_the_temporary_recipe_without_pushing(self):
+        result, calls = self.run_engine("docker", "amd64", rootfs=True, allow_insecure=True, fail="buildx build")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.prepared_recipe_exists, [False])
+        self.assertFalse(any(cmd[1] == "push" for cmd in calls))
+
+    def test_rootfs_detection_is_not_broken_by_pipefail_on_large_recipes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recipe = Path(tmp) / "Containerfile"
+            recipe.write_text('RUN hb-rootfs exec /new-root-fs dnf install glibc\n' + 'RUN echo ordinary\n' * 10000)
+            script = 'set -eo pipefail; source "$REPO/build/lib/ci-platforms.sh"; ci_requires_rootfs_mounts "$RECIPE"'
+            result = subprocess.run(["bash", "-c", script], env={**os.environ, "REPO": str(REPO), "RECIPE": str(recipe)}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_docker_multiarch_publishes_one_index_not_overwriting_tags(self):
         result, calls = self.run_engine("docker", "linux/amd64, linux/arm64 linux/amd64")

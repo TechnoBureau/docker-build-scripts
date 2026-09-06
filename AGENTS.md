@@ -51,7 +51,7 @@ claiming runtime verification.
 | Runtime/build/arch-specific package sets | `hb_packages.py` |
 | Version query plan, validation, cache fingerprint | `hb_versions.py` |
 | Container calls for version queries | `get_rpm_versions.sh` |
-| Image-side reset, base validation, crypto-policy setup, cleanup | `rootfs.sh` |
+| Image-side reset, temporary transaction mounts, base validation, policy, cleanup | `rootfs.sh` |
 | Work tree, matrix, per-row config | `hbgen.py` |
 | Jinja context, labels/tags/tailoring | `generate_jinja2.py` |
 | Flavor orchestration and per-row state | `ci-hummingbird.sh` |
@@ -88,7 +88,8 @@ prepare → aggregate → rpms → optional versions → render → config.
 
 No real container engine is required by the offline tests. Stubbed engine tests
 verify commands, not actual image builds, RPM transactions or FIPS certification.
-Report that boundary explicitly.
+A separate native Linux mount/chroot probe runs when user/mount namespaces are
+available; it does not emulate Rosetta or execute RPM. Report that boundary explicitly.
 
 ### 2.4 `before_commit`
 
@@ -150,6 +151,12 @@ HB_PYTHON=python3 ./tests/run-tests.sh
 15. **Unresolved version tags are not published.** `unknown` and `unknown-*`
     are filtered before `TAG_STRATEGY=custom`. *(F28–F32)*
 
+16. **RPM installroot commands run with temporary proc/dev/runtime mounts.**
+    Use `hb-rootfs exec`, not bare installroot transactions or disabled scriptlets.
+    Cleanup preserves command failures and leaves no runtime mounts in the image.
+    Permissions are independent of chunkah; Docker elevation requires explicit
+    opt-in. *(RootfsTransactionTests; RootfsMountNamespaceTests; EngineTests)*
+
 Python test classes are in `tests/hummingbird/test_*.py` and
 `tests/test_build_engine.py`. A–F identifiers belong to the shell suite.
 
@@ -178,7 +185,8 @@ Hummingbird knobs: `HB_DISTROS`, `HB_VARIANTS`, `HB_VERSION`, `HB_TAGS`,
 `HB_REGISTRIES`, `HB_SKIP_RPM_VERSIONS`, `HB_RPM_VERSIONS_TTL`, `HB_PYTHON`,
 `HUMMINGBIRD_DIR`. Shared engine knobs include `PLATFORMS`, `SKIP_PUSH`,
 `INSTALL_BINFMT=auto|false|force`, `DIND_IMAGE`, `SOURCE_DATE_EPOCH`, `DEBUG`,
-`BUILD_OUTPUT_DIR`, `BUILDX_BUILDER`, and Podman's `PARALLEL_PLATFORMS`/`BUILD_JOBS`.
+`BUILD_OUTPUT_DIR`, `BUILDX_BUILDER`, `ALLOW_INSECURE_ROOTFS` (Docker mount-aware
+recipes; trusted builds only), and Podman's `PARALLEL_PLATFORMS`/`BUILD_JOBS`.
 
 FIPS-ready userspace is not proof of validated FIPS operation. Verify approved
 modules, host FIPS mode and application behavior on the deployment platform.

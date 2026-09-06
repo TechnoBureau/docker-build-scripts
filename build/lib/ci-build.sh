@@ -287,6 +287,15 @@ ci_build_and_push(){
     local engine
     engine="$(detect_container_engine)"
 
+    # Recompute per recipe so a previous rootfs build cannot grant capabilities
+    # to an unrelated later Dockerfile. Reject unapproved Docker elevation before
+    # registry login, repository creation, emulator setup or the build itself.
+    CONFIG[ROOTFS_MOUNTS]=false
+    if ci_requires_rootfs_mounts "$dockerfile"; then
+        CONFIG[ROOTFS_MOUNTS]=true
+    fi
+    ci_require_rootfs_entitlement "$engine" || return 1
+
     ci_setup_buildx || { log_error "ci_setup_buildx failed"; return 1; }
 
     # base args

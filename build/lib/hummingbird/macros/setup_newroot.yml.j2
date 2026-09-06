@@ -63,8 +63,8 @@ RUN --mount=type=cache,id=hb-dnf-{{ distro }}-${TARGETARCH},target=${DNF_CACHE},
 {%- if distro == "hummingbird" %}
 RUN rpmkeys --import /etc/pki/rpm-gpg/RPM-GPG-KEY-hummingbird-release --root "${NEWROOT}"
 {%- endif %}
-# Native DNF installroot works in regular builds; it does not need nested
-# namespaces or SYS_ADMIN mounts. The builder stage runs on the target arch.
+# RPM scriptlets chroot into NEWROOT. Temporary proc/dev/runtime mounts make
+# /proc/self/exe and devices available there, including under Rosetta/QEMU.
 RUN --mount=type=cache,id=hb-dnf-{{ distro }}-${TARGETARCH},target=${DNF_CACHE},sharing=locked \
-    dnf ${DNF_FLAGS} --installroot="${NEWROOT}" install filesystem
+    hb-rootfs exec "${NEWROOT}" dnf ${DNF_FLAGS} --installroot="${NEWROOT}" install filesystem
 {% endmacro -%}

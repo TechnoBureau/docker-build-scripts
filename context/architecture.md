@@ -85,6 +85,7 @@ between a flavour and the engine.
 | `GIT_*` | Commit metadata for labels | `extract_git_info` |
 | `DISTRO`, `VARIANT` | Hummingbird row identity (informational) | hummingbird |
 | `PUSH` | Global publish permission; `SKIP_PUSH=true` is an additional hard veto | both flavours |
+| `ROOTFS_MOUNTS` | Computed from the recipe's `hb-rootfs exec` calls; recalculated per build, independent of chunkah | `ci-build.sh` / `ci-platforms.sh` |
 
 Registry precedence is resolved by `build_registries_array()` into the global
 `REGISTRIES` array as `"name,prefix,push"` strings:
@@ -115,6 +116,11 @@ warns and falls back to `latest`.
 - No-push builds retain local output. Docker multi-arch exposes `CI_IMAGE_ARCHIVE`
   (`BUILD_OUTPUT_DIR`, default `<context>/.ci-output/`); Podman exposes
   `CI_LOCAL_MANIFEST`. Single-arch builds receive a local tag.
+- Rootfs RPM transactions require mount permissions even with portable final
+  assembly. Podman receives `--cap-add=SYS_ADMIN`. Docker requires the explicit
+  `ALLOW_INSECURE_ROOTFS=true` opt-in, an entitled BuildKit builder, and a temporary
+  recipe copy with insecure RUN flags limited to rootfs transactions. The engine
+  refuses unapproved Docker elevation before registry/emulator/build operations.
 - `PARALLEL_PLATFORMS` controls Podman workers; Docker buildx schedules its workers.
 - Explicit chunkah mode disables cache replay and parallel workers. Ordinary
   generated images use a real multi-stage COPY dependency instead of a host archive.

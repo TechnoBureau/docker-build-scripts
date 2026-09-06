@@ -1,7 +1,7 @@
 {%- macro cleanup_newroot(keep_licenses=false) -%}
 {%- if not is_builder %}
 {% if remove_rpms_from_newroot is defined and remove_rpms_from_newroot -%}
-RUN rpm --root "${NEWROOT}" -e {{ remove_rpms_from_newroot if remove_rpms_from_newroot is string else remove_rpms_from_newroot | join(' ') }} --nodeps
+RUN hb-rootfs exec "${NEWROOT}" rpm --root "${NEWROOT}" -e {{ remove_rpms_from_newroot if remove_rpms_from_newroot is string else remove_rpms_from_newroot | join(' ') }} --nodeps
 {% endif -%}
 {% if not keep_licenses -%}
 RUN rm -rf \
