@@ -56,7 +56,8 @@ group() {
 }
 
 # Every assertion is prefixed with a stable test id so a failure can be traced
-# back to the flaw it guards (see context/flaw-report-hummingbird.md).
+# back to the behaviour it guards. Ids are cited from AGENTS.md §3 (the
+# invariants) and from the WHY: comment at each fix site.
 # WHY -t suppresses counting as well as printing: a filtered run reports only
 # the assertions you asked about, so the summary stays meaningful. The scope is
 # restated in the summary so a green filtered run is never mistaken for a green
@@ -121,6 +122,9 @@ skip_remaining() {
 # Environment
 # --------------------------------------------------------------------------- #
 PYTHON="${HB_PYTHON:-python3}"
+if [[ "$PYTHON" == */* && "$PYTHON" != /* ]]; then
+    PYTHON="$(cd "$(dirname "$PYTHON")" && pwd)/$(basename "$PYTHON")"
+fi
 if ! command -v "${PYTHON}" >/dev/null 2>&1; then
     echo "python3 not found; cannot run the hummingbird tests" >&2
     exit 1
@@ -264,9 +268,9 @@ if matches_filter "matrix"; then
     matrix="$(hbgen matrix --hbgen "${CURL_TREE}" --image curl 2>/dev/null)"
 
     # Flaw: the driver built the raw cartesian product and ignored the
-    # additional_variants distro restriction, producing ubi9/fips.
+    # additional_variants distro restriction, producing an unwanted debug row.
     row_for() { awk -F '\t' -v d="$1" -v v="$2" '$1==d && $2==v {print "present"}' <<< "${matrix}"; }
-    assert_eq "B2 distro-restricted variant ubi9/fips is excluded" "" "$(row_for ubi9 fips)"
+    assert_eq "B2 distro-restricted variant ubi9/debug is excluded" "" "$(row_for ubi9 debug)"
     assert_eq "B3 unrestricted variant hummingbird/fips is kept" "present" "$(row_for hummingbird fips)"
 
     image_for() { awk -F '\t' -v d="$1" -v v="$2" '$1==d && $2==v {print $3}' <<< "${matrix}"; }
@@ -276,12 +280,13 @@ if matches_filter "matrix"; then
     assert_eq "B5 composite fips-builder publishes curl-builder" "curl-builder" "$(image_for hummingbird fips-builder)"
     assert_eq "B6 non-builder variant shares the image repository" "curl" "$(image_for hummingbird fips)"
 
-    assert_eq "B7 matrix has one row per allowed combination" "7" "$(grep -c . <<< "${matrix}")"
+    assert_eq "B7 matrix has one row per allowed combination" "9" "$(grep -c . <<< "${matrix}")"
 
     output="$(hbgen matrix --hbgen "${CURL_TREE}" --image curl --variants nosuchvariant 2>&1)"
     assert_fails_with "B8 unknown variant is rejected" "${output}" "unknown variant"
     assert_fails_with "B9 rejection lists the valid variants" "${output}" "fips-builder"
     assert_no_traceback "B10 rejection is a message, not a traceback" "${output}"
+    assert_eq "B11 ubi9/fips is supported" "present" "$(row_for ubi9 fips)"
 fi
 
 # --------------------------------------------------------------------------- #
@@ -380,7 +385,7 @@ if matches_filter "render"; then
     assert_contains "D11 fips-builder is labelled as a builder" "${fips_builder_cf}" \
         'io.hummingbird-project.variant.builder="true"'
 
-    assert_contains "D12 FIPS crypto policy applied for the fips variant" "${fips_cf}" '_pol="FIPS"'
+    assert_contains "D12 FIPS crypto policy applied for the fips variant" "${fips_cf}" 'hb-rootfs policy "${NEWROOT}" "FIPS"'
     assert_contains "D13 ubi9 build disables the hummingbird repositories" "${ubi9_cf}" "--disablerepo=public-hummingbird*"
     assert_contains "D14 ubi9 build copies its own repo file" "${ubi9_cf}" "COPY yum-repos/ubi9.repo"
     assert_contains "D15 ubi9 compliance uses the ubi9 datastream" "${ubi9_cf}" "/run/src/oscap/ssg-rhel9-ds.xml"
@@ -450,8 +455,8 @@ if matches_filter "errors"; then
     output="$(cd "${badvars}/hello/.hbgen" 2>/dev/null || mkdir -p "${badvars}/hello/.hbgen"; \
               cd "${badvars}/hello" && hbgen prepare --image-dir "${badvars}/hello" --builders-dir "${badvars}" >/dev/null 2>&1; \
               cd "${badvars}/hello/.hbgen" && "${PYTHON}" "${VENDORED}/aggregate_properties.py" 2>&1)"
-    assert_fails_with "E10 variables.yml missing default_variants names the key" "${output}" "default_variants"
-    assert_no_traceback "E11 missing default_variants is a message, not a traceback" "${output}"
+    assert_contains "E10 omitted default_variants uses the secure default" "${output}" "variants: default"
+    assert_no_traceback "E11 default_variants is optional" "${output}"
 
     emptyvars="${WORK}/empty-vars"
     cp -R "${NO_OSCAP_BUILDERS}" "${emptyvars}"
@@ -527,11 +532,11 @@ if matches_filter "driver"; then
     ci_hummingbird_build "${CURL}" > "${WORK}/build.log" 2>&1
     status=$?
     assert_eq "F8 full pipeline succeeds" "0" "${status}"
-    assert_eq "F9 every matrix row was built (stdin-safe iteration)" "7" "${#BUILT_ROWS[@]}"
-    assert_eq "F10 images accumulated for post-build cleanup" "7" "${#HB_BUILT_IMAGES[@]}"
+    assert_eq "F9 every matrix row was built (stdin-safe iteration)" "9" "${#BUILT_ROWS[@]}"
+    assert_eq "F10 images accumulated for post-build cleanup" "9" "${#HB_BUILT_IMAGES[@]}"
     assert_contains "F11 composite builder variant built as curl-builder" "${BUILT_ROWS[*]}" \
         "hummingbird/fips-builder:curl-builder"
-    assert_not_contains "F12 restricted ubi9/fips never built" "${BUILT_ROWS[*]}" "ubi9/fips:"
+    assert_not_contains "F12 restricted ubi9/debug never built" "${BUILT_ROWS[*]}" "ubi9/debug:"
 
     # Reproducible builds: the engine passes CONFIG[ARG_*] from the environment,
     # so the epoch has to be exported and stable between rows.

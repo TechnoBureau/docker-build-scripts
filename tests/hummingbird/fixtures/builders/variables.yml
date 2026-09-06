@@ -45,3 +45,6 @@ oscap:
       reason: kept for the tailoring regression test
       profiles:
         - stig
+
+# Keep the legacy version-query count stable; multi-arch has a separate suite.
+platforms: [linux/amd64]

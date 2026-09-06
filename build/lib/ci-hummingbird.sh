@@ -60,6 +60,13 @@ if [[ -z "${CI_CORE_LOADED:-}" ]]; then
     source "${LIB_DIR}/ci-core.sh"
 fi
 
+# Generated FROM/base_image references use the same credential discovery as
+# ordinary Dockerfiles. Do not invent a separate registry parser for this flavour.
+if ! declare -F parse_dockerfile_from_images >/dev/null; then
+    # shellcheck source=/dev/null
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-dockerfile.sh"
+fi
+
 # Vendored hummingbird machinery (generators, macros, templates, yum repos).
 HUMMINGBIRD_DIR="${HUMMINGBIRD_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/hummingbird" && pwd)}"
 
@@ -72,19 +79,24 @@ HB_WORK_TREE=".hbgen"
 
 # ci_hummingbird_worktree <builder_dir> -> <builder_dir>/.hbgen
 ci_hummingbird_worktree() {
-    printf '%s/%s\n' "${1%/}" "${HB_WORK_TREE}"
+    local builder_dir="${1:-}"
+    [[ -n "$builder_dir" ]] || { log_error 'missing builder directory'; return 1; }
+    printf '%s/%s\n' "${builder_dir%/}" "${HB_WORK_TREE}"
 }
 
 # ci_hummingbird_context <builder_dir> -> the build context of every variant
 ci_hummingbird_context() {
-    local builder_dir="${1:?missing builder directory}"
+    local builder_dir="${1:-}"
+    [[ -n "$builder_dir" ]] || { log_error 'missing builder directory'; return 1; }
     printf '%s/images/%s\n' "$(ci_hummingbird_worktree "${builder_dir}")" "$(basename "${builder_dir}")"
 }
 
 # ci_hummingbird_variant_dir <builder_dir> <distro> <variant>
 ci_hummingbird_variant_dir() {
-    local builder_dir="${1:?missing builder directory}"
-    printf '%s/%s/%s\n' "$(ci_hummingbird_context "${builder_dir}")" "${2:?missing distro}" "${3:?missing variant}"
+    local builder_dir="${1:-}"
+    [[ -n "$builder_dir" ]] || { log_error 'missing builder directory'; return 1; }
+    [[ -n "${2:-}" && -n "${3:-}" ]] || { log_error 'missing distro or variant'; return 1; }
+    printf '%s/%s/%s\n' "$(ci_hummingbird_context "${builder_dir}")" "$2" "$3"
 }
 
 # =============================================================================
@@ -95,10 +107,24 @@ ci_hummingbird_variant_dir() {
 # Input:
 #   $1 - script name inside HUMMINGBIRD_DIR; rest passed through
 # =============================================================================
+ci_hummingbird_interpreter() {
+    local python
+    python="$(command -v "${HB_PYTHON:-python3}")" || {
+        log_error "Python interpreter not found: ${HB_PYTHON:-python3}"; return 1;
+    }
+    # A relative venv path must survive the later chdir into .hbgen.
+    if [[ "$python" != /* ]]; then
+        python="$(cd "$(dirname "$python")" && pwd)/$(basename "$python")" || return 1
+    fi
+    printf '%s\n' "$python"
+}
+
 ci_hummingbird_python() {
-    local script="${1:?missing generator script}"
+    local script="${1:-}" python
+    [[ -n "$script" ]] || { log_error 'missing generator script'; return 1; }
     shift
-    "${HB_PYTHON:-python3}" "${HUMMINGBIRD_DIR}/${script}" "$@"
+    python="$(ci_hummingbird_interpreter)" || return 1
+    "$python" "${HUMMINGBIRD_DIR}/${script}" "$@"
 }
 
 # =============================================================================
@@ -279,6 +305,10 @@ ci_hummingbird_matrix() {
 #   0 on success, non-zero on the first failing stage
 # =============================================================================
 ci_hummingbird_generate() {
+    local interpreter
+    interpreter="$(ci_hummingbird_interpreter)" || return 1
+    local HB_PYTHON="$interpreter"
+    export HB_PYTHON
     local builder_dir
     builder_dir="$(ci_hummingbird_require_builder "${1:-}")" || return 1
 
@@ -344,7 +374,8 @@ ci_hummingbird_generate() {
 #                         vendored script)
 # =============================================================================
 ci_hummingbird_resolve_rpm_versions() {
-    local builder_dir="${1:?missing builder directory}"
+    local builder_dir="${1:-}"
+    [[ -n "$builder_dir" ]] || { log_error 'missing builder directory'; return 1; }
     local work_tree image_name
     work_tree="$(ci_hummingbird_worktree "${builder_dir}")"
     image_name="$(basename "${builder_dir}")"
@@ -359,7 +390,9 @@ ci_hummingbird_resolve_rpm_versions() {
     local engine
     engine="$(detect_container_engine 2>/dev/null || echo docker)"
 
-    ( cd "${work_tree}" && CONTAINER_ENGINE="${engine}" ci/get_rpm_versions.sh ) || {
+    local python
+    python="$(ci_hummingbird_interpreter)" || return 1
+    ( cd "${work_tree}" && HB_PYTHON="$python" CONTAINER_ENGINE="${engine}" ci/get_rpm_versions.sh ) || {
         log_error "get_rpm_versions.sh failed for ${image_name} (engine: ${engine}); set HB_SKIP_RPM_VERSIONS=true to render without package versions"
         return 1
     }
@@ -380,7 +413,7 @@ ci_hummingbird_reset_config() {
     local key
     for key in "${!CONFIG[@]}"; do
         case "${key}" in
-            DF_REGISTRY_*|CUSTOM_TAGS|PLATFORMS|CHUNKAH|VARIANT|DISTRO|TAG_STRATEGY)
+            DF_REGISTRY_*|FROM_REGISTRY_*|CUSTOM_TAGS|PLATFORMS|CHUNKAH|VARIANT|DISTRO|TAG_STRATEGY|PUSH)
                 unset "CONFIG[${key}]"
                 ;;
         esac
@@ -451,6 +484,8 @@ ci_hummingbird_configure() {
     CONFIG[TAG_STRATEGY]="${hb[HBGEN_TAG_STRATEGY]}"
     [[ -n "${hb[HBGEN_TAGS]}" ]] && CONFIG[CUSTOM_TAGS]="${hb[HBGEN_TAGS]}"
     CONFIG[CHUNKAH]="${hb[HBGEN_CHUNKAH]}"
+    CONFIG[PUSH]=true
+    [[ "${hb[HBGEN_SKIP_PUSH]}" != true ]] || CONFIG[PUSH]=false
     [[ -n "${hb[HBGEN_PLATFORMS]}" ]] && CONFIG[PLATFORMS]="${hb[HBGEN_PLATFORMS]}"
 
     # Registries -> the DF_REGISTRY_* keys the shared engine understands
@@ -474,6 +509,7 @@ ci_hummingbird_configure() {
         return 1
     fi
     build_registries_array
+    parse_dockerfile_from_images "${variant_dir}/Containerfile" || return 1
 
     # Reproducible builds: the rendered Containerfile declares
     # ARG SOURCE_DATE_EPOCH and the engine passes CONFIG[ARG_*] from the
@@ -489,12 +525,9 @@ ci_hummingbird_configure() {
 # ci_hummingbird_cleanup_archives
 # Purpose:
 #   Remove the chunkah rootfs archives left in the build context.
-#   WHY here and not per build: the final stage reads
-#   `FROM oci-archive:out.ociarchive` from the build context. When the engine
-#   replays that RUN from its layer cache the archive is not rewritten, so
-#   deleting it after every single build would break the next one with
-#   "archive file not found". Deleting once, after the last row, reclaims the
-#   disk without that hazard.
+#   The shared engine cleans its successful chunkah builds; this sweep also
+#   handles archives left by custom callers. Archive-producing builds run
+#   uncached, so retaining an old file is never used as a cache-validity rule.
 # Input:
 #   $1 - build context directory
 # =============================================================================

@@ -15,7 +15,7 @@ Pipeline (each stage is a subcommand and can be run by hand to debug):
     hbgen.py config    print the build configuration of one row (TAB separated)
 
 Work-tree layout produced by ``prepare`` (a reconstruction of the upstream
-hummingbird repository layout, so the vendored generators run unchanged)::
+hummingbird repository layout, so the vendored generators find their expected inputs)::
 
     .hbgen/
     ├── macros/  templates/  yum-repos/     symlinks to the vendored copies
@@ -59,8 +59,10 @@ from hb_config import (
     effective_section,
     load_yaml,
     merge_variables,
+    resolve_repos,
 )
 from hb_variant import resolve_image_name
+from hb_platforms import resolve_platforms
 
 #: Vendored generators/macros/templates, overridable for testing.
 HUMMINGBIRD_DIR = Path(os.environ.get("HUMMINGBIRD_DIR", Path(__file__).resolve().parent))
@@ -191,13 +193,13 @@ def resolve_matrix(
     ``additional_variants`` entries may pin a variant to specific distros::
 
         additional_variants:
-          - name: fips
+          - name: debug
             distros: [hummingbird]
 
     Aggregating those restrictions into ``variant_distros`` is not enough on its
-    own: building the raw cartesian product produced ubi9/fips anyway, which
-    then resolved FIPS packages against the ubi9 repositories and failed (or
-    worse, built an image nobody asked for).
+    own: building the raw cartesian product would produce ubi9/debug anyway.
+    FIPS is supported on both
+    Hummingbird and UBI; restrictions are user-defined, not a FIPS limitation.
     """
     restrictions: dict[str, list[str]] = {
         str(name): [str(pattern) for pattern in as_list(patterns)]
@@ -317,6 +319,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     properties = load_yaml(image_dir / "properties.yml", f"properties.yml of '{image}'")
 
     distros = resolve_distros(variables, properties, args.distros)
+    variables["platforms"] = resolve_platforms(variables, properties)
 
     _recreate_tree(hbgen)
 
@@ -338,10 +341,11 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         _symlink(HUMMINGBIRD_DIR / name, hbgen / name)
     (hbgen / "ci").mkdir(parents=True, exist_ok=True)
     _symlink(HUMMINGBIRD_DIR / "get_rpm_versions.sh", hbgen / "ci" / "get_rpm_versions.sh")
+    _symlink(HUMMINGBIRD_DIR, hbgen / "ci" / "internal")
 
     # Distro repo files must live INSIDE the build context: non-hummingbird
     # Containerfiles COPY yum-repos/<distro>.repo into the builder stage so
-    # dnf-installroot installs from that distro's repositories. The hbgen-level
+    # DNF installs from that distro's repositories. The hbgen-level
     # yum-repos symlink serves rpms.in.yaml/get_rpm_versions.sh only.
     _copy_repo_files(HUMMINGBIRD_DIR / "yum-repos", target_image_dir / "yum-repos")
 
@@ -349,6 +353,12 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     _copy_oscap_datastreams(
         required_oscap_datastreams(variables, properties, distros), target_image_dir
     )
+
+    # Builder-only helpers are part of the generated context, never the final
+    # rootfs. Keep the script testable without a container engine.
+    support = target_image_dir / "hb-scripts"
+    support.mkdir()
+    shutil.copy2(HUMMINGBIRD_DIR / "rootfs.sh", support / "rootfs.sh")
 
     # Extra build-context files (rootfs for config/scripts, src for source
     # builds, prebuildfs for the shared runtime libraries).
@@ -572,7 +582,7 @@ def cmd_config(args: argparse.Namespace) -> int:
         tags         HB_TAGS > rendered TAGS > version-latest strategy
         registries   HB_REGISTRIES > REGISTRY > variables.yml registries/registry
         push         SKIP_PUSH > variables.yml skip_push > per-registry push
-        platforms    PLATFORMS > variables.yml platforms
+        platforms    PLATFORMS > properties.yml > variables.yml > runner native
         chunkah      detected from the rendered Containerfile
         source epoch SOURCE_DATE_EPOCH > git commit time > template mtime > now
     """
@@ -592,7 +602,7 @@ def cmd_config(args: argparse.Namespace) -> int:
     tags, tag_strategy = _resolve_tags(variant_dir, version)
     skip_push = _resolve_skip_push(variables)
     registries = _resolve_registries(variables, skip_push)
-    platforms = _resolve_platforms(variables)
+    platforms = _resolve_platforms(variables, tree.image_properties())
     chunkah = _detect_chunkah(tree.containerfile(distro, variant))
     source_date_epoch = _resolve_source_date_epoch(args.image_dir or tree.image_dir)
 
@@ -736,14 +746,8 @@ def _resolve_registries(variables: dict, skip_push: bool) -> list[tuple[str, str
     return resolved
 
 
-def _resolve_platforms(variables: dict) -> str:
-    env_value = os.environ.get("PLATFORMS", "").strip()
-    if env_value:
-        return ",".join(_split(env_value))
-    configured = variables.get("platforms")
-    if isinstance(configured, list):
-        return ",".join(str(item) for item in configured)
-    return str(configured or "")
+def _resolve_platforms(variables: dict, properties: dict | None = None) -> str:
+    return ",".join(resolve_platforms(variables, properties or {}))
 
 
 def _detect_chunkah(containerfile: Path) -> bool:
@@ -836,21 +840,10 @@ def cmd_distros(args: argparse.Namespace) -> int:
 
 
 def _warn_missing_repos(variables: dict, properties: dict, distros: Iterable[str]) -> None:
-    """Warn when a distro has no repo mapping.
-
-    generate_rpms_in falls back to default_variant_repos.default or the image's
-    additional_repos, and the build itself resolves packages from the builder
-    image's baked-in repos — so this is a warning, not an error.
-    """
-    known_repos = variables.get("default_variant_repos") or {}
-    if properties.get("additional_repos") or "default" in known_repos:
-        return
     for distro in distros:
-        if distro not in known_repos:
-            note(
-                f"no default_variant_repos entry for distro '{distro}' in "
-                f"variables.yml; rpms.in.yaml will reference no yum repo files"
-            )
+        for repo in resolve_repos(variables, properties, distro):
+            if not (HUMMINGBIRD_DIR / "yum-repos" / repo).is_file():
+                note(f"repository file for '{distro}' not vendored: yum-repos/{repo}")
 
 
 def _dump_yaml(data: dict, destination: "Path | object") -> None:

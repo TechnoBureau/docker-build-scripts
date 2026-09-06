@@ -30,16 +30,203 @@ if [[ -z "${CI_CORE_LOADED:-}" ]]; then
     source "${LIB_DIR}/ci-ecr.sh"
 fi
 
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-platforms.sh"
+
 # Ensure CONFIG is declared as associative array
 declare -gA CONFIG 2>/dev/null || true
 declare -ga CI_BUILD_ARCHES 2>/dev/null || true
 
+ci_get_required_binfmt_arches() {
+    local requested_platforms="$1"
+    local -a requested_platform_list=()
+    local req_plat
+    local native_arch=""
+    local -a required_arches=()
+    local -A seen_arches=()
+
+    native_arch="$(uname -m 2>/dev/null || echo "")"
+    case "$native_arch" in
+        x86_64|amd64) native_arch="amd64" ;;
+        aarch64|arm64) native_arch="arm64" ;;
+        armv7l|armv7|armhf) native_arch="arm" ;;
+        ppc64le) native_arch="ppc64le" ;;
+        s390x) native_arch="s390x" ;;
+    esac
+
+    IFS=',' read -ra requested_platform_list <<< "$requested_platforms"
+    for req_plat in "${requested_platform_list[@]}"; do
+        req_plat="$(echo "$req_plat" | tr -d ' ')"
+        [[ -z "$req_plat" ]] && continue
+        [[ "$req_plat" != linux/* ]] && continue
+
+        local req_arch="${req_plat#linux/}"
+        case "$req_arch" in
+            amd64|386) ;;
+            arm64|arm/v8) req_arch="arm64" ;;
+            arm/v7|arm/v6|arm) req_arch="arm" ;;
+            ppc64le|s390x|riscv64) ;;
+        esac
+
+        [[ "$req_arch" == "$native_arch" ]] && continue
+        [[ -n "${seen_arches[$req_arch]:-}" ]] && continue
+        seen_arches["$req_arch"]=1
+        required_arches+=("$req_arch")
+    done
+
+    printf '%s\n' "${required_arches[*]}"
+}
+
+ci_check_binfmt_platforms() {
+    local binfmt_dir="/proc/sys/fs/binfmt_misc"
+    local -a supported_platforms=()
+    local native_arch=""
+
+    # Get native architecture
+    native_arch="$(uname -m 2>/dev/null || echo "unknown")"
+    case "$native_arch" in
+        x86_64|amd64) native_arch="amd64" ;;
+        aarch64|arm64) native_arch="arm64" ;;
+        armv7l|armv7|armhf) native_arch="arm" ;;
+        ppc64le) native_arch="ppc64le" ;;
+        s390x) native_arch="s390x" ;;
+    esac
+
+    log_info "Native platform: linux/${native_arch}"
+
+    if [[ ! -d "$binfmt_dir" ]]; then
+        log_info "binfmt_misc directory not available"
+        return 0
+    fi
+
+    # Check for registered QEMU interpreters
+    for entry in "$binfmt_dir"/qemu-*; do
+        [[ -f "$entry" ]] || continue
+        local arch="${entry##*/qemu-}"
+        supported_platforms+=("$arch")
+    done
+
+    if [[ ${#supported_platforms[@]} -gt 0 ]]; then
+        log_info "Emulation platforms registered: ${supported_platforms[*]}"
+    else
+        log_info "No emulation platforms currently registered"
+    fi
+}
+
+ci_ensure_binfmt_support() {
+    local requested_platforms="$1"
+    local runtime_image="$2"
+    # install_mode defaults to auto so external callers keep working unchanged
+    local install_mode="${3:-auto}"
+    local required_arch_str=""
+    local install_targets=""
+    local register_path="/proc/sys/fs/binfmt_misc/register"
+
+    required_arch_str="$(ci_get_required_binfmt_arches "$requested_platforms")"
+    required_arch_str="$(echo "$required_arch_str" | xargs 2>/dev/null || true)"
+
+    if [[ -z "$required_arch_str" ]]; then
+        log_info "No non-native emulation required for platforms: $requested_platforms"
+        return 0
+    fi
+
+    if [[ "$install_mode" != "false" && ! -f "$register_path" ]]; then
+        log_info "binfmt_misc not mounted - mounting /proc/sys/fs/binfmt_misc"
+        mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc >/dev/null 2>&1 || \
+            log_warn "Failed to mount binfmt_misc (continuing)"
+    fi
+
+    install_targets="${required_arch_str// /,}"
+    log_info "Ensuring binfmt emulation for required architectures: ${install_targets}"
+
+    # Check supported platforms before installation
+    log_info "Platform support status BEFORE binfmt installation:"
+    ci_check_binfmt_platforms
+
+    # WHY: Check if required emulators are already registered before attempting installation
+    # Map Docker arch names to QEMU binfmt file names to prevent false warnings
+    local binfmt_dir="/proc/sys/fs/binfmt_misc"
+    local -a missing_arches=()
+    IFS=',' read -ra required_arch_list <<< "$install_targets"
+
+    for arch in "${required_arch_list[@]}"; do
+        arch="$(echo "$arch" | tr -d ' ')"
+        [[ -z "$arch" ]] && continue
+
+        # Map Docker arch names to QEMU binfmt file names
+        local qemu_arch="$arch"
+        case "$arch" in
+            amd64) qemu_arch="x86_64" ;;
+            arm64) qemu_arch="aarch64" ;;
+            arm) qemu_arch="arm" ;;
+            ppc64le) qemu_arch="ppc64le" ;;
+            s390x) qemu_arch="s390x" ;;
+            riscv64) qemu_arch="riscv64" ;;
+            386) qemu_arch="i386" ;;
+        esac
+
+        # Check if qemu-$qemu_arch is registered
+        if [[ ! -f "$binfmt_dir/qemu-$qemu_arch" ]]; then
+            missing_arches+=("$arch")
+        fi
+    done
+
+    if [[ "$install_mode" == "false" ]]; then
+        # WHY return 0 (not 1): the caller decides whether cross-platform is
+        # fatal. We only refuse to *install*; an already-registered emulator
+        # still works, and a single-arch build needs none of this.
+        if [[ ${#missing_arches[@]} -eq 0 ]]; then
+            log_info "All required emulators already registered (INSTALL_BINFMT=false - no installation needed)"
+        else
+            log_warn "INSTALL_BINFMT=false: not installing missing emulators: ${missing_arches[*]}"
+            log_warn "Cross-platform builds for those architectures will fail until binfmt is provided by the runner"
+        fi
+        log_info "Platform support status (binfmt installation skipped):"
+        ci_check_binfmt_platforms
+        return 0
+    fi
+
+    if [[ ${#missing_arches[@]} -eq 0 && "$install_mode" != "force" ]]; then
+        log_info "All required emulators already registered - skipping installation"
+    else
+        if [[ ${#missing_arches[@]} -eq 0 ]]; then
+            log_info "All required emulators already registered - reinstalling (INSTALL_BINFMT=force)"
+        else
+            log_info "Missing emulators: ${missing_arches[*]} - attempting installation"
+        fi
+
+        # WHY: Use detected container engine instead of hardcoded docker
+        local container_engine_cmd
+        container_engine_cmd="$(detect_container_engine 2>/dev/null || echo docker)"
+
+        # Try installation with two different command formats
+        if $container_engine_cmd run --rm --privileged \
+            -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
+            "$runtime_image" \
+            /binfmt-check.sh --install "${install_targets}" >/dev/null 2>&1; then
+            log_info "Successfully installed binfmt emulators via /binfmt-check.sh"
+        elif $container_engine_cmd run --rm --privileged \
+            -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
+            "$runtime_image" \
+            --install "${install_targets}" >/dev/null 2>&1; then
+            log_info "Successfully installed binfmt emulators"
+        else
+            log_warn "Failed to install binfmt emulators via ${runtime_image} - may already be installed or require manual setup"
+        fi
+    fi
+
+    # Check supported platforms after installation
+    log_info "Platform support status AFTER binfmt installation:"
+    ci_check_binfmt_platforms
+}
+
+
 # Setup buildx / podman configuration for multi-arch builds
 ci_setup_buildx(){
-    local container_engine
-    container_engine="$(detect_container_engine 2>/dev/null || echo docker)"
     # WHY: Use CONFIG[PLATFORMS] from parsed config, not env var PLATFORMS
-    local platforms="${CONFIG[PLATFORMS]:-}"
+    local platforms
+    platforms="$(ci_normalize_platforms "${CONFIG[PLATFORMS]:-}")" || return 1
+    CONFIG[PLATFORMS]="$platforms"
     # WHY honoured here (and nowhere else): INSTALL_BINFMT is the escape hatch for
     # runners that cannot install QEMU emulators (no --privileged, no binfmt_misc).
     # auto  = install only the emulators that are missing (default, historic behaviour)
@@ -57,229 +244,37 @@ ci_setup_buildx(){
     esac
     local dind_image="${DIND_IMAGE:-${dind_image:-}}"
 
-    ci_get_required_binfmt_arches() {
-        local requested_platforms="$1"
-        local native_arch=""
-        local -a required_arches=()
-        local -A seen_arches=()
-
-        native_arch="$(uname -m 2>/dev/null || echo "")"
-        case "$native_arch" in
-            x86_64|amd64) native_arch="amd64" ;;
-            aarch64|arm64) native_arch="arm64" ;;
-            armv7l|armv7|armhf) native_arch="arm" ;;
-            ppc64le) native_arch="ppc64le" ;;
-            s390x) native_arch="s390x" ;;
-        esac
-
-        IFS=',' read -ra requested_platform_list <<< "$requested_platforms"
-        for req_plat in "${requested_platform_list[@]}"; do
-            req_plat="$(echo "$req_plat" | tr -d ' ')"
-            [[ -z "$req_plat" ]] && continue
-            [[ "$req_plat" != linux/* ]] && continue
-
-            local req_arch="${req_plat#linux/}"
-            case "$req_arch" in
-                amd64|386) ;;
-                arm64|arm/v8) req_arch="arm64" ;;
-                arm/v7|arm/v6|arm) req_arch="arm" ;;
-                ppc64le|s390x|riscv64) ;;
-            esac
-
-            [[ "$req_arch" == "$native_arch" ]] && continue
-            [[ -n "${seen_arches[$req_arch]:-}" ]] && continue
-            seen_arches["$req_arch"]=1
-            required_arches+=("$req_arch")
-        done
-
-        printf '%s\n' "${required_arches[*]}"
-    }
-
-    ci_check_binfmt_platforms() {
-        local binfmt_dir="/proc/sys/fs/binfmt_misc"
-        local -a supported_platforms=()
-        local native_arch=""
-
-        # Get native architecture
-        native_arch="$(uname -m 2>/dev/null || echo "unknown")"
-        case "$native_arch" in
-            x86_64|amd64) native_arch="amd64" ;;
-            aarch64|arm64) native_arch="arm64" ;;
-            armv7l|armv7|armhf) native_arch="arm" ;;
-            ppc64le) native_arch="ppc64le" ;;
-            s390x) native_arch="s390x" ;;
-        esac
-
-        log_info "Native platform: linux/${native_arch}"
-
-        if [[ ! -d "$binfmt_dir" ]]; then
-            log_info "binfmt_misc directory not available"
-            return 0
-        fi
-
-        # Check for registered QEMU interpreters
-        for entry in "$binfmt_dir"/qemu-*; do
-            [[ -f "$entry" ]] || continue
-            local arch="${entry##*/qemu-}"
-            supported_platforms+=("$arch")
-        done
-
-        if [[ ${#supported_platforms[@]} -gt 0 ]]; then
-            log_info "Emulation platforms registered: ${supported_platforms[*]}"
-        else
-            log_info "No emulation platforms currently registered"
-        fi
-    }
-
-    ci_ensure_binfmt_support() {
-        local requested_platforms="$1"
-        local runtime_image="$2"
-        # install_mode defaults to auto so external callers keep working unchanged
-        local install_mode="${3:-${install_binfmt:-auto}}"
-        local required_arch_str=""
-        local install_targets=""
-        local register_path="/proc/sys/fs/binfmt_misc/register"
-
-        required_arch_str="$(ci_get_required_binfmt_arches "$requested_platforms")"
-        required_arch_str="$(echo "$required_arch_str" | xargs 2>/dev/null || true)"
-
-        if [[ -z "$required_arch_str" ]]; then
-            log_info "No non-native emulation required for platforms: $requested_platforms"
-            return 0
-        fi
-
-        if [[ ! -f "$register_path" ]]; then
-            log_info "binfmt_misc not mounted - mounting /proc/sys/fs/binfmt_misc"
-            mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc >/dev/null 2>&1 || \
-                log_warn "Failed to mount binfmt_misc (continuing)"
-        fi
-
-        install_targets="${required_arch_str// /,}"
-        log_info "Ensuring binfmt emulation for required architectures: ${install_targets}"
-
-        # Check supported platforms before installation
-        log_info "Platform support status BEFORE binfmt installation:"
-        ci_check_binfmt_platforms
-
-        # WHY: Check if required emulators are already registered before attempting installation
-        # Map Docker arch names to QEMU binfmt file names to prevent false warnings
-        local binfmt_dir="/proc/sys/fs/binfmt_misc"
-        local -a missing_arches=()
-        IFS=',' read -ra required_arch_list <<< "$install_targets"
-
-        for arch in "${required_arch_list[@]}"; do
-            arch="$(echo "$arch" | tr -d ' ')"
-            [[ -z "$arch" ]] && continue
-
-            # Map Docker arch names to QEMU binfmt file names
-            local qemu_arch="$arch"
-            case "$arch" in
-                amd64) qemu_arch="x86_64" ;;
-                arm64) qemu_arch="aarch64" ;;
-                arm) qemu_arch="arm" ;;
-                ppc64le) qemu_arch="ppc64le" ;;
-                s390x) qemu_arch="s390x" ;;
-                riscv64) qemu_arch="riscv64" ;;
-                386) qemu_arch="i386" ;;
-            esac
-
-            # Check if qemu-$qemu_arch is registered
-            if [[ ! -f "$binfmt_dir/qemu-$qemu_arch" ]]; then
-                missing_arches+=("$arch")
-            fi
-        done
-
-        if [[ "$install_mode" == "false" ]]; then
-            # WHY return 0 (not 1): the caller decides whether cross-platform is
-            # fatal. We only refuse to *install*; an already-registered emulator
-            # still works, and a single-arch build needs none of this.
-            if [[ ${#missing_arches[@]} -eq 0 ]]; then
-                log_info "All required emulators already registered (INSTALL_BINFMT=false - no installation needed)"
-            else
-                log_warn "INSTALL_BINFMT=false: not installing missing emulators: ${missing_arches[*]}"
-                log_warn "Cross-platform builds for those architectures will fail until binfmt is provided by the runner"
-            fi
-            log_info "Platform support status (binfmt installation skipped):"
-            ci_check_binfmt_platforms
-            return 0
-        fi
-
-        if [[ ${#missing_arches[@]} -eq 0 && "$install_mode" != "force" ]]; then
-            log_info "All required emulators already registered - skipping installation"
-        else
-            if [[ ${#missing_arches[@]} -eq 0 ]]; then
-                log_info "All required emulators already registered - reinstalling (INSTALL_BINFMT=force)"
-            else
-                log_info "Missing emulators: ${missing_arches[*]} - attempting installation"
-            fi
-
-            # WHY: Use detected container engine instead of hardcoded docker
-            local container_engine_cmd
-            container_engine_cmd="$(detect_container_engine 2>/dev/null || echo docker)"
-
-            # Try installation with two different command formats
-            if $container_engine_cmd run --rm --privileged \
-                -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
-                "$runtime_image" \
-                /binfmt-check.sh --install "${install_targets}" >/dev/null 2>&1; then
-                log_info "Successfully installed binfmt emulators via /binfmt-check.sh"
-            elif $container_engine_cmd run --rm --privileged \
-                -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
-                "$runtime_image" \
-                --install "${install_targets}" >/dev/null 2>&1; then
-                log_info "Successfully installed binfmt emulators"
-            else
-                log_warn "Failed to install binfmt emulators via ${runtime_image} - may already be installed or require manual setup"
-            fi
-        fi
-
-        # Check supported platforms after installation
-        log_info "Platform support status AFTER binfmt installation:"
-        ci_check_binfmt_platforms
-    }
-
-    if [[ -z "$dind_image" ]]; then
-        if [[ "$container_engine" == "docker" ]]; then
-            dind_image="docker.io/tonistiigi/binfmt:latest"
-        else
-            dind_image="quay.io/podman/stable:latest"
-        fi
+    # The binfmt installer is engine-independent. A plain podman/stable image
+    # does not implement tonistiigi's --install interface.
+    dind_image="${dind_image:-docker.io/tonistiigi/binfmt:latest}"
+    if [[ -n "$platforms" ]]; then
+        # A single foreign architecture needs emulation too, not only lists
+        # containing a comma. This applies to Podman as well as Docker.
+        ci_ensure_binfmt_support "$platforms" "$dind_image" "$install_binfmt" || return 1
+    else
+        log_info "Native build platform: $(ci_native_platform)"
     fi
-
-    if [[ "$container_engine" == "docker" ]]; then
-        if ! $container_engine buildx version >/dev/null 2>&1; then
-            log_warn "docker buildx not available - fall back to docker build"
-            return 0
-        fi
-
-        if [[ -z "$platforms" || "$platforms" != *","* ]]; then
-            # Single-platform build - just show native platform
-            local native_arch=""
-            native_arch="$(uname -m 2>/dev/null || echo "unknown")"
-            case "$native_arch" in
-                x86_64|amd64) native_arch="amd64" ;;
-                aarch64|arm64) native_arch="arm64" ;;
-                armv7l|armv7|armhf) native_arch="arm" ;;
-                ppc64le) native_arch="ppc64le" ;;
-                s390x) native_arch="s390x" ;;
-            esac
-            log_info "Single-platform build - using native platform: linux/${native_arch}"
-            return 0
-        fi
-
-        # Multi-platform build - install binfmt emulation only
-        log_info "Installing binfmt emulation for multi-platform build"
-        ci_ensure_binfmt_support "$platforms" "$dind_image"
-
-        log_info "Using native Docker with binfmt for multi-platform build"
-
-        return 0
-    fi
-
-    # Podman path - no buildx; rely on podman build with --platform when supported
     return 0
 }
 
+
+
+# WHY: Helper function to export build arg as environment variable
+# Exports to both shell env and IBM Cloud Toolchain (set_env) if available
+ci_export_build_arg() {
+    local arg_name="$1"
+    local arg_value="$2"
+
+    # Export to shell environment
+    export "${arg_name}=${arg_value}"
+
+    # Export to IBM Cloud Toolchain if set_env is available
+    if command -v set_env >/dev/null 2>&1; then
+        set_env "${arg_name}" "${arg_value}" 2>/dev/null || true
+    fi
+
+    log_debug "Exported build arg: ${arg_name}=${arg_value}"
+}
 
 
 # Main build and push function. Respects REGISTRIES array entries (name,prefix,push)
@@ -294,23 +289,6 @@ ci_build_and_push(){
 
     ci_setup_buildx || { log_error "ci_setup_buildx failed"; return 1; }
 
-    # WHY: Helper function to export build arg as environment variable
-    # Exports to both shell env and IBM Cloud Toolchain (set_env) if available
-    ci_export_build_arg() {
-        local arg_name="$1"
-        local arg_value="$2"
-
-        # Export to shell environment
-        export "${arg_name}=${arg_value}"
-
-        # Export to IBM Cloud Toolchain if set_env is available
-        if command -v set_env >/dev/null 2>&1; then
-            set_env "${arg_name}" "${arg_value}" 2>/dev/null || true
-        fi
-
-        log_debug "Exported build arg: ${arg_name}=${arg_value}"
-    }
-
     # base args
     # WHY: Use CONFIG[VERSION] from parsed Dockerfile comments, not env var VERSION
     local version_val="${CONFIG[VERSION]:-latest}"
@@ -319,10 +297,9 @@ ci_build_and_push(){
 
 
     local platforms="${CONFIG[PLATFORMS]:-}"
-    local image_format="${CONFIG[IMAGE_FORMAT]:-oci}"
     local build_arch=""
     CI_BUILD_ARCHES=()
-    [[ -n "$platforms" ]] && build_args+=("--platform" "$platforms")
+    # Platform flags are supplied by the execution adapter, once per target.
 
     # WHY: Add IMAGE_NAME as build arg (commonly used in Dockerfiles)
     local image_name_val="${CONFIG[IMAGE_NAME]:-unnamed}"
@@ -371,6 +348,10 @@ ci_build_and_push(){
         [[ "$pair" =~ ^([^=]+)=(.+)$ ]] || continue
         local arg_name="${BASH_REMATCH[1]}"
         local env_name="${BASH_REMATCH[2]}"
+        case "$arg_name" in
+            TARGETARCH|TARGETOS|TARGETVARIANT|TARGETPLATFORM)
+                log_error "$arg_name is selected by PLATFORMS, not BUILD_ARG"; return 1 ;;
+        esac
         local arg_value="${!env_name:-}"
 
         # WHY: Try get_env if direct env var is empty (IBM Cloud Toolchain support)
@@ -392,6 +373,7 @@ ci_build_and_push(){
     for k in "${!CONFIG[@]}"; do
         [[ "$k" =~ ^ARG_ ]] || continue
         local arg_name="${k#ARG_}"
+        case "$arg_name" in TARGETARCH|TARGETOS|TARGETVARIANT|TARGETPLATFORM) continue ;; esac
 
         # Skip if already supplied via BUILD_ARG
         if [[ " ${build_arg_pairs[*]:-} " == *" ${arg_name}="* ]]; then
@@ -493,6 +475,10 @@ ci_build_and_push(){
 
     for reg_entry in "${REGISTRIES[@]:-}"; do
         IFS=',' read -r reg pref push <<< "$reg_entry"
+        # Global no-push is a hard gate shared by both flavours and direct
+        # engine callers; a registry's push=true cannot override it.
+        case "${SKIP_PUSH:-false}" in true|TRUE|yes|1|on) push=false ;; esac
+        case "${CONFIG[PUSH]:-true}" in false|FALSE|no|0|off) push=false ;; esac
         log_debug "Processing registry: reg=$reg, pref=$pref, push=$push"
 
         local repo="${reg}"
@@ -534,404 +520,18 @@ ci_build_and_push(){
         [[ -n "$build_arch" ]] && CI_BUILD_ARCHES=("$build_arch")
     fi
 
-    # Chunkah build hook: apply chunkah-specific flags and constraints
-    if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
-        log_info "Chunkah build detected, applying chunkah workarounds"
-        
-        # Force sequential platform builds (shared /run/src bind mount)
-        PARALLEL_PLATFORMS="false"
-        
-        # Add chunkah-specific build args
-        build_args+=("--build-arg" "ARCHIVE_PATH=out-\${TARGETARCH}.ociarchive")
-        ci_export_build_arg "ARCHIVE_PATH" "out-\${TARGETARCH}.ociarchive"
-        
-        # For podman/buildah: add bind mount for /run/src and skip-unused-stages
-        if [[ "$engine" == "podman" ]] || [[ "$engine" == "buildah" ]]; then
-            # We'll add the volume mount later in the platform build loop
-            log_debug "Chunkah: will add -v context:/run/src --security-opt=label=disable for podman/buildah"
-
-            # dnf-installroot mounts tmpfs on /run, /tmp, /dev inside the
-            # newroot, which requires CAP_SYS_ADMIN. Rootless podman/buildah
-            # exclude it by default; without it every RUN fails with
-            # "mount: permission denied" (or "unshare: Operation not permitted"
-            # on hosts whose seccomp blocks namespace creation, e.g. GitHub
-            # Actions runner containers).
-            build_args+=("--cap-add=SYS_ADMIN")
-        fi
-
-        # Force the archive-producing builder stage to run. Without this,
-        # podman/buildah skip the stage (the final stage only references the
-        # oci-archive, whose dependency on the builder stage is invisible) and
-        # the build fails with "archive file not found".
-        if [[ "$engine" == "podman" ]] || [[ "$engine" == "buildah" ]]; then
-            build_args+=("--skip-unused-stages=false")
-        fi
-    fi
-
-
-    if [[ "$engine" == "docker" ]]; then
-        # WHY: Multi-platform build with configurable parallelism
-        if [[ -n "$platforms" && "$platforms" == *","* ]]; then
-            IFS=',' read -ra platform_list <<< "$platforms"
-            log_info "Building ${#platform_list[@]} platform(s): ${platform_list[*]}"
-
-            local -a build_pids=()
-
-            # WHY: PARALLEL_PLATFORMS flag controls sequential vs parallel builds
-            if [[ "${PARALLEL_PLATFORMS:-true}" == "true" ]]; then
-                log_info "Building platforms in parallel"
-
-                # Start all platform builds in parallel
-                for plat in "${platform_list[@]}"; do
-                    plat="$(echo "$plat" | tr -d ' ')"
-                    [[ -z "$plat" ]] && continue
-
-                    log_info "Starting build for platform: $plat"
-                    (
-                        local arch="${plat##*/}"
-
-                        # Build for specific platform
-                        local platform_args=("${build_args[@]}")
-                        # Replace --platform with single platform
-                        local -a filtered_args=()
-                        local skip_next=0
-                        for arg in "${platform_args[@]}"; do
-                            if [[ $skip_next -eq 1 ]]; then
-                                skip_next=0
-                                continue
-                            fi
-                            if [[ "$arg" == "--platform" ]]; then
-                                skip_next=1
-                                continue
-                            fi
-                            filtered_args+=("$arg")
-                        done
-                        filtered_args+=("--platform" "$plat")
-
-                        # Build image
-                        local chunkah_mount=()
-                        if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
-                            chunkah_mount=(-v "$context:/run/src" --security-opt=label=disable)
-                        fi
-                        $engine build "${chunkah_mount[@]}" "${filtered_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || exit 1
-
-                        # Push and save artifacts
-                        local primary_registry=""
-                        local primary_prefix=""
-                        if [[ ${#REGISTRIES[@]} -gt 0 ]]; then
-                            IFS=',' read -r primary_registry primary_prefix _ <<< "${REGISTRIES[0]}"
-                        fi
-
-                        for img in "${CI_BUILT_IMAGES[@]}"; do
-                            log_info "Pushing $img for platform $plat"
-                            $engine push "$img" 2>&1 | grep -vE '^(The push refers to|Preparing|Waiting|Layer already exists|Pushed)' || exit 1
-
-                            local is_primary="false"
-                            [[ -n "$primary_registry" && "$img" == "${primary_registry}"* ]] && is_primary="true"
-
-                            log_info "Saving artifact: $img (arch: $arch, primary: $is_primary)"
-                            ci_ibmcloud_save_artifact "$img" "$arch" "$is_primary"
-                        done
-                    ) &
-                    build_pids+=($!)
-                done
-            else
-                log_info "Building platforms sequentially"
-
-                # Build platforms one at a time
-                for plat in "${platform_list[@]}"; do
-                    plat="$(echo "$plat" | tr -d ' ')"
-                    [[ -z "$plat" ]] && continue
-
-                    local arch="${plat##*/}"
-                    log_info "Building platform: $plat"
-
-                    # Build for specific platform
-                    local platform_args=("${build_args[@]}")
-                    local -a filtered_args=()
-                    local skip_next=0
-                    for arg in "${platform_args[@]}"; do
-                        if [[ $skip_next -eq 1 ]]; then
-                            skip_next=0
-                            continue
-                        fi
-                        if [[ "$arg" == "--platform" ]]; then
-                            skip_next=1
-                            continue
-                        fi
-                        filtered_args+=("$arg")
-                    done
-                    filtered_args+=("--platform" "$plat")
-
-                    # Build and push
-                    local chunkah_mount=()
-                    if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
-                        chunkah_mount=(-v "$context:/run/src" --security-opt=label=disable)
-                    fi
-                    $engine build "${chunkah_mount[@]}" "${filtered_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || {
-                        log_error "Platform build failed: $plat"
-                        return 1
-                    }
-
-                    local primary_registry=""
-                    local primary_prefix=""
-                    if [[ ${#REGISTRIES[@]} -gt 0 ]]; then
-                        IFS=',' read -r primary_registry primary_prefix _ <<< "${REGISTRIES[0]}"
-                    fi
-
-                    for img in "${CI_BUILT_IMAGES[@]}"; do
-                        log_info "Pushing $img for platform $plat"
-                        $engine push "$img" 2>&1 | grep -vE '^(The push refers to|Preparing|Waiting|Layer already exists|Pushed)' || {
-                            log_error "Push failed: $img"
-                            return 1
-                        }
-
-                        local is_primary="false"
-                        [[ -n "$primary_registry" && "$img" == "${primary_registry}"* ]] && is_primary="true"
-
-                        log_info "Saving artifact: $img (arch: $arch, primary: $is_primary)"
-                        ci_ibmcloud_save_artifact "$img" "$arch" "$is_primary"
-                    done
-
-                    log_success "Platform build completed: $plat"
-                done
-
-                # Skip wait logic for sequential builds
-                build_pids=()
-            fi
-
-            # Wait for parallel builds if any
-            if [[ ${#build_pids[@]} -gt 0 ]]; then
-                local build_failed=0
-                local idx=0
-                for pid in "${build_pids[@]}"; do
-                    local plat="${platform_list[$idx]}"
-                    plat="$(echo "$plat" | tr -d ' ')"
-
-                    if wait "$pid"; then
-                        log_success "Platform build completed: $plat"
-                    else
-                        log_error "Platform build failed: $plat"
-                        build_failed=1
-                    fi
-                    ((idx++))
-                done
-
-                [[ $build_failed -eq 1 ]] && return 1
-            fi
-
-            log_success "All ${#platform_list[@]} platform builds completed"
-        else
-            log_info "Building single platform image with Docker"
-            $engine build "${build_args[@]}" "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || return 1
-
-            for img in "${CI_BUILT_IMAGES[@]}"; do
-                log_info "Pushing $img"
-                $engine push "$img" 2>&1 | grep -vE '^(The push refers to|Preparing|Waiting|Layer already exists|Pushed)' || return 1
-            done
-        fi
+    # The same execution adapters serve Dockerfile and generated builds.
+    # Every adapter propagates build/push failure and only publishes a manifest
+    # after all requested architectures have built successfully.
+    # Consumer-visible outputs for builds that intentionally do not push.
+    export CI_IMAGE_ARCHIVE="" CI_LOCAL_MANIFEST=""
+    if [[ "$engine" == docker ]]; then
+        ci_build_docker_platforms "$context" "$platforms" "${build_args[@]}" || return 1
+    elif [[ "$engine" == podman ]]; then
+        ci_build_podman_platforms "$context" "$platforms" "${build_args[@]}" || return 1
     else
-        # podman - build args are already clean; use podman build directly
-        local podman_args=("${build_args[@]:-}")
-
-        # WHY: Add --network=host for Podman to enable network access during build
-        podman_args+=("--network=host")
-
-        podman_args+=("--format" "${image_format}")
-
-        # Chunkah: bind-mount the hbgen images dir so the builder stage can
-        # read oscap-tailoring.xml and the archive-producing RUN can write
-        # out.ociarchive into the build context
-        if [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]]; then
-            podman_args+=(-v "$context:/run/src" --security-opt=label=disable)
-        fi
-
-
-
-        # podman supports --platform on a per-build basis, check platforms from CONFIG
-        if [[ -n "${platforms:-}" && "${platforms}" == *","* ]]; then
-            # WHY: Parallel builds for each platform to save time (podman builds sequentially by default)
-            local manifest="${CONFIG[IMAGE_NAME]:-unnamed}:latest"
-            podman manifest rm "$manifest" >/dev/null 2>&1 || true
-            podman manifest create "$manifest" >/dev/null 2>&1 || true
-            # WHY: Control layer build parallelism
-            # BUILD_JOBS: layer parallelism (default: auto-detect, capped at 4 for safety)
-            local cpu_count
-            cpu_count=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "4")
-            local build_jobs="${BUILD_JOBS:-${cpu_count}}"
-
-            # WHY: Cap at 4 for safety (higher values may cause issues)
-            if [[ $build_jobs -gt 4 ]]; then
-                build_jobs=4
-                log_warn "BUILD_JOBS capped at 4 for stability"
-            fi
-
-            # Chunkah builds cannot use --jobs: parallel layer builds make
-            # podman resolve every FROM image upfront, including the not-yet-
-            # created oci-archive, failing with "archive file not found"
-            local -a jobs_arg=("--jobs=${build_jobs}")
-            [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]] && jobs_arg=()
-
-            log_info "Using ${build_jobs} parallel jobs for layer builds (CPUs: ${cpu_count})"
-
-            # WHY: Remove --tag and --platform from manifest_args:
-            # --tag is not supported on manifest builds
-            # --platform is added per-iteration by the loop below; keeping the
-            # comma-separated value here would cause every per-platform build to
-            # build all 3 arches instead of just its own.
-            local -a manifest_args=()
-            local skip_next=0
-            for arg in "${podman_args[@]}"; do
-                if [[ $skip_next -eq 1 ]]; then
-                    skip_next=0
-                    continue
-                fi
-                if [[ "$arg" == "--tag" || "$arg" == "--platform" ]]; then
-                    skip_next=1
-                    continue
-                fi
-                manifest_args+=("$arg")
-            done
-
-            local -a platform_pids=()
-            local -a platform_list=()
-
-            # Split platforms
-            IFS=',' read -ra platform_list <<< "${platforms}"
-            log_info "Building ${#platform_list[@]} platform(s): ${platform_list[*]}"
-
-            # WHY: PARALLEL_PLATFORMS flag controls sequential vs parallel builds
-            # Default: true (parallel) for speed, set to false for stability
-            if [[ "${PARALLEL_PLATFORMS:-true}" == "true" ]]; then
-                log_info "Building platforms in parallel"
-
-                # Start all platform builds in parallel
-                for plat in "${platform_list[@]}"; do
-                    log_info "Starting build for platform: $plat"
-                    (
-                        # WHY: Build with optimizations
-                        # --jobs: parallel layer builds
-                        # --layers: enable layer caching
-                        # --force-rm: cleanup intermediate containers
-                        podman build "${manifest_args[@]}" \
-                            --platform "$plat" \
-                            --manifest "$manifest" \
-                            "${jobs_arg[@]}" \
-                            --layers=true \
-                            --force-rm \
-                            "$context" 2>&1 | \
-                        grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || {
-                            log_error "Platform build failed: $plat"
-                            return 1
-                        }
-                    ) &
-                    platform_pids+=($!)
-                done
-            else
-                log_info "Building platforms sequentially"
-
-                # Build platforms one at a time
-                for plat in "${platform_list[@]}"; do
-                    log_info "Building platform: $plat"
-                    podman build "${manifest_args[@]}" \
-                        --platform "$plat" \
-                        --manifest "$manifest" \
-                        "${jobs_arg[@]}" \
-                        --layers=true \
-                        --force-rm \
-                        "$context" 2>&1 | \
-                    grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || {
-                        log_error "Platform build failed: $plat"
-                        return 1
-                    }
-                    log_success "Platform build completed: $plat"
-                done
-
-                # Skip wait logic for sequential builds
-                platform_pids=()
-            fi
-
-            # Wait for all builds and check status
-            local build_failed=0
-            local idx=0
-            for pid in "${platform_pids[@]}"; do
-                local plat="${platform_list[$idx]}"
-
-                if wait "$pid"; then
-                    log_success "Platform build completed: $plat"
-                    platform_status+=("success")
-                else
-                    log_error "Platform build failed: $plat"
-                    platform_status+=("failed")
-                    build_failed=1
-                fi
-                ((idx++))
-            done
-
-            if [[ $build_failed -eq 1 ]]; then
-                log_error "One or more platform builds failed"
-                return 1
-            fi
-
-            log_success "All ${#platform_list[@]} platform builds completed successfully"
-
-            # WHY: Push manifest to all tagged images, not just the first one
-            local primary_registry=""
-            local primary_prefix=""
-            if [[ ${#REGISTRIES[@]} -gt 0 ]]; then
-                IFS=',' read -r primary_registry primary_prefix _ <<< "${REGISTRIES[0]}"
-            fi
-
-            if [[ "${#CI_BUILT_IMAGES[@]}" -gt 0 ]]; then
-                for img in "${CI_BUILT_IMAGES[@]}"; do
-                    log_info "Pushing manifest to: $img"
-                    podman manifest push --format "${image_format}" --all "$manifest" "$img" || log_warn "Failed to push manifest to $img"
-
-                    local is_primary="false"
-                    [[ -n "$primary_registry" && "$img" == "${primary_registry}"* ]] && is_primary="true"
-
-                    log_info "Saving artifact: $img (primary: $is_primary, multi-arch podman)"
-                    ci_ibmcloud_save_artifact "$img" "" "$is_primary"
-                done
-            fi
-        else
-            # WHY: Control layer build parallelism
-            log_info "no platforms specified or single platform - building with podman build with native architecture"
-            local cpu_count
-            cpu_count=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "4")
-            local build_jobs="${BUILD_JOBS:-${cpu_count}}"
-
-            # WHY: Cap at 4 for safety
-            if [[ $build_jobs -gt 4 ]]; then
-                build_jobs=4
-                log_warn "BUILD_JOBS capped at 4 for stability"
-            fi
-
-            # Chunkah builds cannot use --jobs: parallel layer builds make
-            # podman resolve every FROM image upfront, including the not-yet-
-            # created oci-archive, failing with "archive file not found"
-            local -a jobs_arg=("--jobs=${build_jobs}")
-            [[ "${CONFIG[CHUNKAH]:-false}" == "true" ]] && jobs_arg=()
-
-            log_info "Using ${build_jobs} parallel jobs for layer builds (CPUs: ${cpu_count})"
-
-            # WHY: Build single-arch output into a manifest/index too so push flow matches
-            # multi-arch behavior and can carry manifest-level attestation metadata.
-
-            podman build "${podman_args[@]}" \
-                "${jobs_arg[@]}" \
-                --layers=true \
-                --force-rm \
-                "$context" 2>&1 | grep -vE '^#[0-9]+ (pushing layer|exporting layers|writing image|pushing manifest)' || return 1
-
-            # WHY: Push single-arch image through image path as well
-            if [[ "${#CI_BUILT_IMAGES[@]}" -gt 0 ]]; then
-                for img in "${CI_BUILT_IMAGES[@]}"; do
-                    log_info "Pushing single-arch image to registry: $img"
-                    podman push --format "${image_format}" "$img" || { log_error "Failed to push $img"; return 1; }
-                done
-            fi
-        fi
+        log_error "Unsupported container engine: $engine (use docker or podman)"
+        return 1
     fi
 
     # Print SHA digest and summary for built images
@@ -968,7 +568,7 @@ ci_build_and_push(){
 
     # === ARTIFACT SAVE ===
     # WHY: Save artifacts for single-platform builds only.
-    # Docker multi-platform: saved per-platform inside the build loop above.
+    # Docker multi-platform: saved from the buildx index by ci-platforms.sh.
     # Podman multi-platform: saved per-image after manifest push above.
     if [[ ${#CI_BUILT_IMAGES[@]} -gt 0 && -n "${CI_BUILT_IMAGES[0]}" ]]; then
         # Only save for single-platform builds (multi-platform saves in their respective sections)
@@ -1004,18 +604,10 @@ ci_build_and_push(){
     # Cleanup pre-pulled FROM images
     ci_cleanup_pulled_images "$engine" "${pulled_images[@]}"
 
-    # Cleanup chunkah rootfs archives (ARCHIVE_PATH in the build context)
-    # WHY only out-*.ociarchive: this pattern matches the per-arch archives the
-    # engine asks for through ARCHIVE_PATH. It deliberately does NOT match the
-    # hummingbird `out.ociarchive`, whose final stage reads
-    # `FROM oci-archive:out.ociarchive` from the same context: when the engine
-    # replays the archive-producing RUN from its layer cache the file is not
-    # rewritten, so deleting it here would fail the next build in the same
-    # pipeline with "archive file not found". The hummingbird driver removes
-    # those archives once, after its last row (ci_hummingbird_cleanup_archives).
-    if [[ "${CONFIG[CHUNKAH]:-false}" == "true" && -d "$context" ]]; then
-        rm -f "$context"/out-*.ociarchive 2>/dev/null || true
-        log_info "Cleaned up chunkah rootfs archives from ${context}"
+    # Explicit chunkah mode runs without cache replay, so a subsequent build
+    # recreates its archive. The portable default never writes one at all.
+    if [[ "${CONFIG[CHUNKAH]:-false}" == true && -d "$context" ]]; then
+        rm -f "$context"/out.ociarchive "$context"/out-*.ociarchive
     fi
 
     # WHY a global with no reader in this repo: CI_LAST_BUILT_IMAGES is declared

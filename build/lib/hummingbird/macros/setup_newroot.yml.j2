@@ -1,94 +1,70 @@
 {%- macro setup_newroot() -%}
+{%- if base_image %}
+# The engine selects this image's TARGET platform, just like the builder stage.
+# Only its filesystem is inherited; image metadata is defined by this template.
+FROM {{ base_image }} AS hb_base
+
+{% endif -%}
 FROM quay.io/hummingbird-ci/hummingbird-builder:latest AS builder
-# Skip the nested mount/pid namespace: podman build already runs each RUN in
-# an ephemeral container, so unshare's atomic-cleanup benefit does not apply,
-# and unshare is blocked on some build hosts (GitHub Actions runner containers,
-# macOS podman VMs). This is the supported escape hatch built into
-# dnf-installroot; the mounts below still happen inside the build container.
-ENV _installroot_unshared=1
-# ARG defaults must be declared inside this stage, not in global scope: a
-# template may define stages before setup_newroot() (e.g. a compiler stage),
-# and ARGs declared between FROMs only apply to the preceding stage.
+# Defaults are stage-local: caller templates may define compiler stages first.
 ARG NEWROOT=/new-root-fs
 ARG DNF_CACHE=/tmp/dnf-cache
-{%- if distro == "hummingbird" %}
-ARG DNF_FLAGS="-y \
-      --use-host-config \
-      --nodocs \
-      --setopt=install_weak_deps=False \
-      --setopt=cachedir=${DNF_CACHE} \
-      --setopt=system_cachedir=${DNF_CACHE} \
-      --setopt=logdir=${DNF_CACHE} \
-      --setopt=varsdir=${DNF_CACHE}"
-{%- else %}
-# Non-hummingbird distro: keep the single hummingbird-builder image (it
-# carries dnf-installroot, verify-compliance, chunkah), but install packages
-# from this distro's repos instead of the baked-in hummingbird repos.
-# WHY no quotes around the glob: DNF_FLAGS is expanded unquoted
-# (dnf-installroot ${NEWROOT} ${DNF_FLAGS}), and quote removal does not apply
-# to variable expansions — '--disablerepo='x*'' would reach dnf with literal
-# quotes and fail with "No matching repositories". The --flag= prefix means
-# the bare glob can never match a real file, so it is safe unquoted.
-ARG DNF_FLAGS="-y \
-      --use-host-config \
-      --disablerepo=public-hummingbird* \
-      --nodocs \
-      --setopt=install_weak_deps=False \
-      --setopt=cachedir=${DNF_CACHE} \
-      --setopt=system_cachedir=${DNF_CACHE} \
-      --setopt=logdir=${DNF_CACHE} \
-      --setopt=varsdir=${DNF_CACHE}"
-{%- if default_variant_repos is defined and distro in default_variant_repos %}
-{%- for repo in default_variant_repos[distro] %}
-COPY yum-repos/{{ repo }} /etc/yum.repos.d/{{ repo }}
-{%- endfor %}
-{%- endif %}
-{%- endif %}
-{{ main_packages_arg() }}
-{{- build_packages_arg() }}
 ARG TARGETARCH
 ARG SOURCE_DATE_EPOCH
+ARG DNF_FLAGS="-y \
+      --use-host-config \
+      --nodocs \
+      --setopt=install_weak_deps=False \
+      --setopt=reposdir=/etc/hb-repos \
+{%- if distro != "hummingbird" %}
+      --disablerepo=public-hummingbird* \
+{%- endif %}
+{%- if releasever %}
+      --releasever={{ releasever }} \
+{%- endif %}
+      --setopt=cachedir=${DNF_CACHE} \
+      --setopt=system_cachedir=${DNF_CACHE} \
+      --setopt=logdir=${DNF_CACHE}"
+# WHY an isolated reposdir: installed packages and version queries must use
+# exactly the selected distro/additional repos, never the builder's other repos.
+{%- for repo in distro_repos %}
+COPY yum-repos/{{ repo }} /etc/hb-repos/{{ repo }}
+{%- endfor %}
+COPY --chmod=0755 hb-scripts/rootfs.sh /usr/local/bin/hb-rootfs
+{{ main_packages_arg() }}
+{{ build_packages_arg() }}
 
-{%- if image_name == "hummingbird-builder" %}
-# When building the builder image itself, copy the builder scripts first
-# so they're available for the steps below
-COPY dnf-installroot.sh /usr/local/bin/dnf-installroot
-COPY download-locked-packages.sh /usr/local/bin/download-locked-packages
-COPY inject-source-info.sh /usr/local/bin/inject-source-info
-COPY verify-compliance.sh /usr/local/bin/verify-compliance
+# Start blank even if the tooling image already carries a stale rootfs/RPM DB.
+RUN hb-rootfs reset "${NEWROOT}" && mkdir -p "${DNF_CACHE}"
+{%- if base_image %}
+COPY --from=hb_base / ${NEWROOT}/
+RUN hb-rootfs check-base "${NEWROOT}" "{{ distro }}"
 {%- endif %}
 
-RUN mkdir -p ${NEWROOT} ${DNF_CACHE}
-
-{%- if is_builder_variant() == "true" %}
-# Configure DNF to disable weak dependencies and documentation in builder images
-RUN mkdir -p ${NEWROOT}/etc/dnf/libdnf5.conf.d && \
-    echo -e '[main]\ninstall_weak_deps=False\ntsflags=nodocs' > ${NEWROOT}/etc/dnf/libdnf5.conf.d/90-builder-defaults.conf
+{%- if is_builder %}
+RUN mkdir -p "${NEWROOT}/etc/dnf/libdnf5.conf.d" && \
+    printf '[main]\ninstall_weak_deps=False\ntsflags=nodocs\n' > "${NEWROOT}/etc/dnf/libdnf5.conf.d/90-builder-defaults.conf"
 {%- endif %}
 
-{#- build_packages is resolved by hb_packages (image build-deps + shared defaults) -#}
 {%- if build_packages %}
-# Install build dependencies in the builder layer
-{%- if distro == "hummingbird" %}
-RUN --mount=type=cache,target=${DNF_CACHE} \
-    dnf install -y ${BUILD_PACKAGES}
-{%- else %}
-RUN --mount=type=cache,target=${DNF_CACHE} \
-    dnf install -y --disablerepo=public-hummingbird* ${BUILD_PACKAGES}
+# Build dependencies stay in the tooling stage, not in the image rootfs.
+RUN --mount=type=cache,id=hb-dnf-{{ distro }}-${TARGETARCH},target=${DNF_CACHE},sharing=locked \
+    dnf ${DNF_FLAGS} install ${BUILD_PACKAGES}
 {%- endif %}
+{%- if build_arch_specific_packages %}
+RUN --mount=type=cache,id=hb-dnf-{{ distro }}-${TARGETARCH},target=${DNF_CACHE},sharing=locked \
+    case "${TARGETARCH:-$(uname -m)}" in \
+{%- for arch, pkgs in build_arch_specific_packages | dictsort %}
+    {{ arch }}|{{ arch | targetarch }}) dnf ${DNF_FLAGS} install {{ pkgs | join(' ') }} ;; \
+{%- endfor %}
+    esac
 {%- endif %}
 
 {%- if distro == "hummingbird" %}
-# Import Hummingbird GPG key into the newroot for package verification
 RUN rpmkeys --import /etc/pki/rpm-gpg/RPM-GPG-KEY-hummingbird-release --root "${NEWROOT}"
 {%- endif %}
-
-# Install filesystem early, so that early container setup works
-# It gets pulled in later by glibc anyway, so no additional dependency
-# WHY cache mount: DNF_FLAGS points cachedir/logdir/varsdir at DNF_CACHE;
-# persisting it across builds skips re-downloads without changing semantics
-# (per-repo caches are arch-aware; image content is untouched).
-RUN --mount=type=cache,target=${DNF_CACHE} \
-    dnf-installroot ${NEWROOT} ${DNF_FLAGS} install filesystem
-
+# Native DNF installroot works in regular builds; it does not need nested
+# namespaces or SYS_ADMIN mounts. The builder stage runs on the target arch.
+RUN --mount=type=cache,id=hb-dnf-{{ distro }}-${TARGETARCH},target=${DNF_CACHE},sharing=locked \
+    dnf ${DNF_FLAGS} --installroot="${NEWROOT}" install filesystem
 {% endmacro -%}

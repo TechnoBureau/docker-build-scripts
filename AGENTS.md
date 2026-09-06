@@ -1,227 +1,184 @@
 # AGENTS.md
 
-Operating manual for AI agents (and humans) working in **docker-build-scripts**.
+Operating manual for agents and engineers working in **docker-build-scripts**.
+Read this entry point, then load only the relevant documents in
+[`context/`](context/README.md). Context describes current code, not one-time
+reviews or task-completion reports.
 
-This file is the entry point. It tells you what to load, what to run, and what
-must never break. Detailed knowledge lives in [`context/`](context/README.md) —
-load those on demand, not all at once.
+## 1. Repository surfaces
 
----
-
-## 1. What this repository is
-
-Enterprise DevOps toolkit, three independent surfaces:
-
-| Surface | Path | What it does |
+| Surface | Location | Responsibility |
 | --- | --- | --- |
-| CI/CD build engine | `build/` | Sources bash libraries to build, tag, sign and push container images; runs the hummingbird and Dockerfile flavours |
-| Image provisioning | `docker/` | Standalone scripts `COPY`'d into Dockerfiles (tool installs, DISA STIG hardening) |
-| Container runtime libs | `build/lib/hummingbird/prebuildfs/` | `lib*` shell libraries baked into images (entrypoint, logging, hooks) |
+| Build engine | `build/universal-ci.sh`, `build/lib/ci-*.sh` | Dockerfile and Hummingbird flavours share config, registry, build and artifact machinery |
+| Declarative RPM builder | `build/lib/hummingbird/` | One definition → Hummingbird/UBI distro × variant × platform builds |
+| Image provisioning | `docker/` | Scripts copied into images for installation/hardening |
+| Runtime libraries | `build/lib/hummingbird/prebuildfs/` | Entrypoint, logging and hook libraries inside built images |
 
-The **hummingbird builder** (`build/lib/ci-hummingbird.sh` +
-`build/lib/hummingbird/`) is the most intricate part: one image definition
-(`properties.yml` + `Containerfile.j2`) fans out into a matrix of
-distro × variant images. Start with
-[`context/hummingbird-pipeline.md`](context/hummingbird-pipeline.md).
+`universal-ci.sh` is a source-and-call library: `source build/universal-ci.sh`,
+then `main_build ...`. Running the file directly does not invoke a build.
 
----
+## 2. Lifecycle hooks
 
-## 2. Hooks
-
-Hooks are commands, not aspirations. Run them at the stated moment.
-
-### 2.1 `on_session_start` — orient before touching anything
+### 2.1 `on_session_start`
 
 ```bash
-git status --short && git log --oneline -5      # where am I, what just happened
-ls build/lib build/lib/hummingbird              # module inventory
-bash --version | head -1; python3 -VV           # toolchain
-command -v podman docker shellcheck             # what can I actually run here
+git status --short && git log --oneline -5
+ls build/lib build/lib/hummingbird
+bash --version | head -1; python3 -VV
+command -v podman docker shellcheck || true
 ```
 
-Then read, in this order, **only what the task needs**:
+Preserve unrelated working-tree changes. Identify the available toolchain before
+claiming runtime verification.
 
-| Task mentions | Load |
+| Task | Load |
 | --- | --- |
-| hummingbird, properties.yml, Containerfile.j2, variant, distro, rpms.in.yaml | `context/hummingbird-pipeline.md` |
-| any build/push/tag/registry/signing behaviour | `context/architecture.md` |
-| writing or reviewing code | `context/conventions.md` |
-| "add a …", "support a new …" | `context/extension-guide.md` |
-| a build that fails | `context/troubleshooting.md` |
-| "why is it like this?", regression hunting | `context/flaw-report-hummingbird.md` |
+| Hummingbird/UBI, FIPS, rootfs, base images, packages/platforms | `context/hummingbird-pipeline.md` |
+| Build/push/config/registry/artifact behavior | `context/architecture.md` |
+| Editing or reviewing code | `context/conventions.md` |
+| Extending capabilities | `context/extension-guide.md` |
+| A failing command | `context/troubleshooting.md` |
+| Tests | `tests/README.md` |
 
-### 2.2 `before_edit` — locate the owner of the behaviour
+### 2.2 `before_edit` — find the owner
 
-Change behaviour in exactly one place. This table is the anti-duplication map:
+| Behavior | Single owner |
+| --- | --- |
+| Variant **name** decomposition and repository naming | `hb_variant.py` |
+| Effective FIPS policy/packages, base-image selection, assembly mode | `hb_rootfs.py` |
+| YAML load/merge, required keys, distro repos/release versions | `hb_config.py` |
+| Hummingbird/UBI target selection and RPM/OCI arch aliases | `hb_platforms.py` |
+| Runtime/build/arch-specific package sets | `hb_packages.py` |
+| Version query plan, validation, cache fingerprint | `hb_versions.py` |
+| Container calls for version queries | `get_rpm_versions.sh` |
+| Image-side reset, base validation, crypto-policy setup, cleanup | `rootfs.sh` |
+| Work tree, matrix, per-row config | `hbgen.py` |
+| Jinja context, labels/tags/tailoring | `generate_jinja2.py` |
+| Flavor orchestration and per-row state | `ci-hummingbird.sh` |
+| Tag strategies, logging, engine discovery | `ci-core.sh` |
+| Registry/config precedence | `ci-config.sh`; FROM credential scopes in `ci-dockerfile.sh` |
+| Build flags/registries | `ci-build.sh` |
+| Shared Docker/Podman platform execution and manifests | `ci-platforms.sh` |
+| Artifacts/signing | `ci-artifacts.sh` |
 
-| Behaviour | Single owner | Never re-implement in |
-| --- | --- | --- |
-| Variant parsing, `-builder` naming | `build/lib/hummingbird/hb_variant.py` | macros, bash, `generate_jinja2.py` |
-| YAML load / deep merge / required keys | `build/lib/hummingbird/hb_config.py` | bash heredocs |
-| Which packages a variant installs | `build/lib/hummingbird/hb_packages.py` | `package_args.yml.j2`, `generate_rpms_in.py` |
-| Work tree, matrix, per-row config | `build/lib/hummingbird/hbgen.py` | `ci-hummingbird.sh` |
-| Jinja rendering, labels, tags | `build/lib/hummingbird/generate_jinja2.py` | bash |
-| Tag *strategies*, logging, engine detection | `build/lib/ci-core.sh` | anywhere |
-| Registry precedence | `build/lib/ci-config.sh` | flavours |
-| Actual build/push/artifacts | `build/lib/ci-build.sh`, `ci-artifacts.sh` | flavours |
+Python filenames above are under `build/lib/hummingbird/`; CI libraries are
+under `build/lib/`.
 
-Rules of the road:
+Rules: bash orchestrates, Python resolves structured data, Jinja renders resolved
+values. Preserve public function names. Keep useful `WHY:` comments; update them
+when behavior changes. Do not commit credentials, `.hbgen/`, `.venv/` or image output.
 
-- **Bash orchestrates, Python decides.** No YAML/JSON parsing in bash — call
-  `hbgen.py`. No container-engine calls in Python — return data to bash.
-- **Keep `WHY:` comments.** They encode incidents (cache interactions, quoting
-  traps, emulation limits). Deleting one re-opens a bug.
-- **Preserve the public function names** (`ci_*`, `main_build`, `load_config`):
-  consumer repositories source them directly.
-- Never write secrets, tokens or `.hbgen/` output into git.
-
-### 2.3 `after_edit` — validate (fast → slow)
+### 2.3 `after_edit` — fast to slow
 
 ```bash
-# 1. Syntax and shell correctness (~2s)
 python3 -m py_compile build/lib/hummingbird/*.py
-shellcheck -x -S warning build/lib/ci-hummingbird.sh build/universal-ci.sh \
-                         build/lib/hummingbird/get_rpm_versions.sh
+shellcheck -x -S warning build/lib/ci-hummingbird.sh build/lib/ci-build.sh \
+    build/lib/ci-platforms.sh build/lib/hummingbird/get_rpm_versions.sh \
+    build/lib/hummingbird/rootfs.sh
 
-# 2. Hummingbird regression suite, fully offline (~6s, 99 assertions)
-#    needs PyYAML + Jinja2; point HB_PYTHON at an interpreter that has them
-HB_PYTHON=python3 ./tests/hummingbird/run-tests.sh
-#    narrow it while iterating:
-./tests/hummingbird/run-tests.sh -k matrix      # one group (prepare|matrix|versions|render|errors|driver)
-./tests/hummingbird/run-tests.sh -t fips        # report only assertions whose name matches
-
-# 3. Inspect real generated output (needs PyYAML + Jinja2 only)
-#    The stages are cumulative: `matrix` needs stage 2, `render` needs `rpms`.
-REPO=/path/to/docker-build-scripts           # this repository
-HB="$REPO/build/lib/hummingbird"
-python3 "$HB/hbgen.py" prepare --image-dir <builder> --builders-dir <builders>
-( cd <builder>/.hbgen && python3 "$HB/aggregate_properties.py" )
-python3 "$HB/hbgen.py" matrix --hbgen <builder>/.hbgen --image <name>
+# Needs PyYAML/Jinja2; see tests/README.md for isolated dependency setup.
+HB_PYTHON=python3 ./tests/run-tests.sh
+# While iterating:
+HB_PYTHON=python3 ./tests/hummingbird/run-tests.sh -k matrix
 ```
 
-The suite needs **no** container engine, network, builder image or package repo:
-`tests/hummingbird/stubs/podman` answers `dnf repoquery`. A real end-to-end
-build (`ci_build_and_push`) cannot run in a sandbox — say so explicitly instead
-of implying it was tested.
+For generated-output debugging, use the copy-and-run sequence in
+`context/troubleshooting.md` §1. Stages are cumulative:
+prepare → aggregate → rpms → optional versions → render → config.
+
+No real container engine is required by the offline tests. Stubbed engine tests
+verify commands, not actual image builds, RPM transactions or FIPS certification.
+Report that boundary explicitly.
 
 ### 2.4 `before_commit`
 
 ```bash
-git status --short                    # no .hbgen/, no __pycache__/, no fixtures drift
-git diff --stat                       # did I touch more than the task needs?
-./tests/hummingbird/run-tests.sh      # green
+git status --short
+git diff --check
+git diff --stat
+HB_PYTHON=python3 ./tests/run-tests.sh
 ```
 
-Checklist:
+- [ ] Behavior changed in its owner, not duplicated in a second layer
+- [ ] Tests cover changed behavior and failure paths
+- [ ] Context/README describe current code; no task report added
+- [ ] Destructive operations validate their paths
+- [ ] No generated output, credentials or virtualenv in the change
+- [ ] Compatibility changes described in the change/release notes
 
-- [ ] Behaviour changed in one owner only (§2.2)
-- [ ] Regression test added or updated for every fixed flaw
-- [ ] `WHY:` comment added wherever the fix is non-obvious
-- [ ] Docs updated: `context/*` **and** `README.md` when behaviour is user-visible
-- [ ] No new inline `python3 - <<PY` heredoc in bash
-- [ ] Backwards compatible, or the break is listed in the commit message
+### 2.5 `on_failure`
 
-### 2.5 `on_failure` — when a build breaks
+1. Start with the real error, not a guess about the failing stage.
+2. Reproduce with the smallest stage/test possible.
+3. Inspect `.hbgen/images/<image>/<distro>/<variant>/Containerfile`, its RPM
+   input, and `hbgen.py config` output rather than only the source template.
+4. Add a test before fixing the behavior; rerun the whole suite afterward.
 
-1. Read the error text; match it against `context/troubleshooting.md`.
-2. Reproduce at the smallest stage instead of re-running the pipeline:
-   every `hbgen.py` subcommand runs standalone (`prepare`, `rpms`, `matrix`,
-   `render`, `config`, `vars`, `distros`).
-3. Inspect the generated truth, not the template:
-   `<builder>/.hbgen/images/<image>/<distro>/<variant>/Containerfile`.
-4. Add the failing case to `tests/hummingbird/` before fixing it.
+## 3. Required invariants
 
----
+1. **Explicit variant distro restrictions apply.** FIPS itself is supported on
+   Hummingbird, UBI9 and UBI10; use a separate restricted fixture to test filters.
+   *(B2, B11, F12)*
+2. **`default` is FIPS-enabled**, even with no OSCAP section. Mandatory packages,
+   policy and labels agree; a FIPS-named variant cannot opt out.
+   *(BuildContractTests: default/FIPS cases)*
+3. **Every build starts with an empty newroot.** Only `base_image` seeds it;
+   seeded packages are upgraded before requested packages are installed.
+   *(RootfsHelperTests; BuildContractTests: seed/upgrade order)*
+4. **Runtime and build dependencies remain separate**, including arch-specific
+   entries. RPM inputs and rendered install sets use the same resolver.
+   *(D2–D3; BuildContractTests: package/arch cases)*
+5. **Versions are distro AND architecture scoped.** Cache TTL cannot hide a
+   changed package/repo/platform request. *(C3–C7; VersionTests)*
+6. **One selected platform set feeds all stages.** Unset means native;
+   single-arm64 must not silently query/build amd64. *(BuildContractTests;
+   VersionTests; EngineTests)*
+7. **Multi-arch tags reference a manifest**, never whichever architecture
+   finished last. Failed builds/pushes return non-zero. *(EngineTests)*
+8. **`is_builder` uses shared variant semantics.** Composite builders retain
+   their packages, defaults, licences and repository suffix. *(B5, D2–D11)*
+9. **The `name=` label matches the published repository.** *(D8–D9)*
+10. **`oscap` is always defined; FIPS does not depend on scanning.** *(E1–E4;
+    BuildContractTests)*
+11. **No stdin-consuming matrix loop or stale per-row config.** *(F9, F19)*
+12. **Sourced functions return errors instead of exiting the caller.** *(F7;
+    EngineTests: hummingbird helpers)*
+13. **Chunkah side effects cannot be replayed from layer cache.** Explicit
+    chunkah builds are uncached/serial; portable assembly needs no host archive.
+    *(EngineTests: chunkah; F26)*
+14. **Only selected SCAP datastreams enter the context.** *(A8–A9)*
+15. **Unresolved version tags are not published.** `unknown` and `unknown-*`
+    are filtered before `TAG_STRATEGY=custom`. *(F28–F32)*
 
-## 3. Non-negotiable invariants
+Python test classes are in `tests/hummingbird/test_*.py` and
+`tests/test_build_engine.py`. A–F identifiers belong to the shell suite.
 
-Breaking any of these has caused a real incident; each is covered by a test id.
-
-1. **The build matrix honours `additional_variants[].distros`.** A variant
-   pinned to `hummingbird` must never be built for `ubi9`. *(tests B2, F12)*
-2. **Versions are per distro.** `curl` in ubi9 repos is not `curl` in
-   hummingbird repos; a flat version map silently mis-tags images. *(C3–C7, D20)*
-3. **`is_builder` comes from `hb_variant`.** Composite variants
-   (`fips-builder`) are builders: packages, dnf defaults, licence retention and
-   the published repository name all depend on it. *(B5, D2–D6)*
-4. **The `name=` label equals the pushed repository.** Scanners resolve images
-   through that label. *(D8, D9)*
-5. **`rpms.in.yaml` and `ARG MAIN_PACKAGES` describe the same set.** *(D2, D3)*
-6. **`oscap` is always defined in the template context**, enabled or not.
-   *(E1, E2)*
-7. **Matrix iteration never reads the row list from stdin.** Any command in the
-   loop body that consumes stdin silently truncates the build. *(F9)*
-8. **A library function returns non-zero; it never terminates the caller's
-   shell.** No `${1:?}` in sourced functions. *(F7)*
-9. **Chunkah `out.ociarchive` survives until the last row is built**, then is
-   removed. Deleting it per build breaks layer-cache replays. *(F26)*
-10. **The build context stays small.** Only the SCAP datastreams of the
-    selected distros are vendored into it. *(A8, A9)*
-11. **No tag containing an unresolved version is ever published.** `unknown` and
-    `unknown-<variant>` are filtered out of `CONFIG[CUSTOM_TAGS]`, which the
-    engine publishes verbatim under `TAG_STRATEGY=custom`. *(F28–F32)*
-12. **`TAG_STRATEGY` names are the ones `ci_generate_tag` implements.** There is
-    no `version-only`, `latest-only` or `git-sha`; an unrecognised value warns
-    and falls back to `latest` rather than tagging silently.
-
----
-
-## 4. Command reference
+## 4. Operational entry points
 
 ```bash
-# Full CI pipeline (Dockerfile flavour)
-./build/universal-ci.sh -d ./Dockerfile -i myimage --skip-push
+source ./build/universal-ci.sh
 
-# Full CI pipeline (hummingbird flavour, auto-detected)
-./build/universal-ci.sh -i curl
-HB_DISTROS="hummingbird ubi9" HB_VARIANTS="default,fips" ./build/universal-ci.sh -i curl
+# Dockerfile flavour; native build with no publishing
+SKIP_PUSH=true main_build -d ./Dockerfile -i myimage
 
-# Promotion between registries
-./build/promotion.sh -s icr.io/ns -r 123.dkr.ecr.us-east-1.amazonaws.com -l "img:v1"
+# Declarative RPM builder; default variant already includes FIPS
+HB_DISTROS=ubi9 HB_VARIANTS=default PLATFORMS=linux/arm64 main_build -i curl
+HB_DISTROS=hummingbird HB_VARIANTS=default \
+    PLATFORMS=linux/amd64,linux/arm64 main_build -i curl
 
-# Debug anything
-DEBUG=true ./build/universal-ci.sh -i curl
+# Verbose operation
+DEBUG=true main_build -i curl
 ```
 
-Hummingbird environment knobs (full list: `context/hummingbird-pipeline.md`):
-`HB_DISTROS`, `HB_VARIANTS`, `HB_VERSION`, `HB_TAGS`, `HB_REGISTRIES`,
-`HB_SKIP_RPM_VERSIONS`, `HB_RPM_VERSIONS_TTL`, `HB_PYTHON`, `HUMMINGBIRD_DIR`.
+`-i` resolves under `BUILDERS_DIR`, then `SOURCE_DIR`. Supported `main_build`
+options are `-d/--dockerfile`, `-i/--image`, `-r/--repo`, `-b/--branch`,
+`-f/--flavor`. Other settings are environment/config values, not CLI flags.
 
-Engine knobs (both flavours): `INSTALL_BINFMT` (`auto`|`false`|`force` — set
-`false` on runners without `--privileged`), `DIND_IMAGE`, `SOURCE_DATE_EPOCH`,
-`DEBUG`, `SKIP_PUSH`, `PLATFORMS`.
+Hummingbird knobs: `HB_DISTROS`, `HB_VARIANTS`, `HB_VERSION`, `HB_TAGS`,
+`HB_REGISTRIES`, `HB_SKIP_RPM_VERSIONS`, `HB_RPM_VERSIONS_TTL`, `HB_PYTHON`,
+`HUMMINGBIRD_DIR`. Shared engine knobs include `PLATFORMS`, `SKIP_PUSH`,
+`INSTALL_BINFMT=auto|false|force`, `DIND_IMAGE`, `SOURCE_DATE_EPOCH`, `DEBUG`,
+`BUILD_OUTPUT_DIR`, `BUILDX_BUILDER`, and Podman's `PARALLEL_PLATFORMS`/`BUILD_JOBS`.
 
----
-
-## 5. Layout
-
-```
-build/
-├── universal-ci.sh            main_build(): flavour detection + orchestration
-├── promotion.sh               registry-to-registry promotion
-├── go-dependencies.sh         Go dependency pinning
-└── lib/
-    ├── ci-core.sh             logging, temps, engine detection, tag strategies
-    ├── ci-config.sh           CONFIG/REGISTRIES precedence, git metadata
-    ├── ci-dockerfile.sh       Dockerfile comment/ARG/secret parsing
-    ├── ci-build.sh            ci_build_and_push(): buildx, tags, push, chunkah
-    ├── ci-artifacts.sh        artifact + signing records
-    ├── ci-registry.sh         logins, credential lookup
-    ├── ci-ecr.sh / ci-secrets.sh / ci-utils.sh / ci-yaml.sh / ci-promote.sh
-    ├── ci-hummingbird.sh      hummingbird flavour driver (thin orchestrator)
-    └── hummingbird/
-        ├── hbgen.py           pipeline CLI: prepare|rpms|matrix|render|config|vars|variants|distros
-        ├── hb_variant.py      variant decomposition + image naming
-        ├── hb_config.py       YAML loading, deep merge, required keys
-        ├── hb_packages.py     package-set resolution
-        ├── aggregate_properties.py  stage 1 (vendored)
-        ├── generate_rpms_in.py      stage 2 (vendored)
-        ├── get_rpm_versions.sh      stage 3 (needs a container engine)
-        ├── generate_jinja2.py       stage 4 renderer (vendored)
-        ├── macros/ templates/       Jinja building blocks
-        ├── yum-repos/ oscap/ prebuildfs/   vendored build inputs
-        └── (tests live in /tests/hummingbird)
-docker/                        provisioning + hardening scripts
-tests/hummingbird/             offline regression suite
-context/                       agent knowledge base (start at context/README.md)
-```
+FIPS-ready userspace is not proof of validated FIPS operation. Verify approved
+modules, host FIPS mode and application behavior on the deployment platform.

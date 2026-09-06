@@ -26,8 +26,10 @@ case "$*" in
 esac
 
 distro="hummingbird"
+arch="x86_64"
 for arg in "$@"; do
     case "${arg}" in
+        --forcearch=*) arch="${arg#*=}" ;;
         *ubi9.repo*) distro="ubi9" ;;
         *ubi10.repo*) distro="ubi10" ;;
     esac
@@ -51,6 +53,6 @@ for arg in "$@"; do
 done
 
 for package in ${packages[@]+"${packages[@]}"}; do
-    awk -F '\t' -v d="${distro}" -v p="${package}" \
-        '$1 == d && $2 == p { print $2, $3 }' "${STUB_DATA}"
+    awk -F '\t' -v d="${distro}" -v p="${package}" -v a="${arch}" \
+        '$1 == d && $2 == p && (NF < 4 || $4 == a) { print $2, $3 }' "${STUB_DATA}"
 done

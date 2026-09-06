@@ -1,53 +1,35 @@
-# context/ — agent knowledge base
+# context/ — reusable repository knowledge
 
-Purpose: everything an agent (or a new engineer) needs to act correctly in this
-repository, split into small files that can be loaded **on demand**.
+[`AGENTS.md`](../AGENTS.md) is the entry point. This folder describes **current
+code contracts and reusable workflows**, not one-time audits, task histories or
+completion reports. Load only the documents needed for the current task.
 
-[`AGENTS.md`](../AGENTS.md) is the entry point and the rulebook. This folder is
-the reference material behind it.
+| Task | Read |
+| --- | --- |
+| Where code lives, entry points and shared engine | [architecture.md](architecture.md) |
+| Hummingbird/UBI, FIPS, base images, rootfs, platforms, package queries | [hummingbird-pipeline.md](hummingbird-pipeline.md) |
+| Style and language boundaries | [conventions.md](conventions.md) |
+| Add a distro, variant, package group, macro or setting | [extension-guide.md](extension-guide.md) |
+| Diagnose a failing build | [troubleshooting.md](troubleshooting.md) |
+| Run or extend offline tests | [../tests/README.md](../tests/README.md) |
 
-## Load on demand
+## Maintenance rules
 
-Do not read all of this up front. Match the task to one or two files:
+- One owner per behavior. Keep detailed rationale in its docstring or `WHY:`
+  comment; summarize the contract here rather than duplicating implementation.
+- Change current docs and regression tests alongside behavior.
+- Add durable guarantees to `AGENTS.md` §3, with a test reference.
+- Keep one-time review/audit narratives in the change description, not this folder.
+- Execute documented command sequences before publishing changes to them.
 
-| If the task is about… | Read | Size |
-| --- | --- | --- |
-| Where anything lives, how the CI engine flows, who calls whom | [`architecture.md`](architecture.md) | ~4 min |
-| hummingbird: builders, distros, variants, `.hbgen`, rpms, macros | [`hummingbird-pipeline.md`](hummingbird-pipeline.md) | ~8 min |
-| "Why is this code like this?" / regressions / known traps | [`flaw-report-hummingbird.md`](flaw-report-hummingbird.md) | ~10 min |
-| Writing or reviewing code (bash, Python, Jinja) | [`conventions.md`](conventions.md) | ~5 min |
-| Adding a distro, variant, macro, registry, template, flavour | [`extension-guide.md`](extension-guide.md) | ~6 min |
-| A failing build or a confusing error message | [`troubleshooting.md`](troubleshooting.md) | lookup |
-| Running or extending the tests | [`../tests/README.md`](../tests/README.md) | ~3 min |
-
-## How these documents are maintained
-
-- **One owner per fact.** If a fact belongs to a module, it is documented next
-  to the module (docstring or `WHY:` comment) and only summarised here.
-- **Behaviour changes update docs in the same commit.** `AGENTS.md` §2.4 lists
-  it in the pre-commit checklist.
-- **Incidents become invariants.** When a bug is fixed, it gets: a `WHY:`
-  comment at the fix site, a row in `flaw-report-hummingbird.md`, an invariant
-  in `AGENTS.md` §3, and a test id in `tests/hummingbird/run-tests.sh`.
-- **Nothing here is aspirational.** Every command in these files has been run
-  in this repository.
-
-## Quick orientation (30 seconds)
+## Orientation
 
 ```
-build/universal-ci.sh          → main_build(): detects flavour, orchestrates
-build/lib/ci-*.sh              → shared engine (config, build, registry, artifacts)
-build/lib/ci-hummingbird.sh    → hummingbird flavour driver (bash orchestration)
-build/lib/hummingbird/*.py     → hummingbird generators (all YAML/Jinja logic)
-docker/*.sh                    → scripts copied into images at build time
-tests/hummingbird/             → offline regression suite (no engine needed)
+main_build() ── Dockerfile flavour ── load_config() ───┐
+             └─ hummingbird flavour ── .hbgen matrix ─┴─ ci_build_and_push()
+                                                          └─ ci-platforms.sh
 ```
 
-Two flavours, one engine:
-
-```
-                    ┌── Dockerfile flavour ──→ load_config() ─┐
-main_build() ───────┤                                         ├──→ ci_build_and_push()
-                    └── hummingbird flavour ─→ .hbgen matrix ─┘
-                        (ci-hummingbird.sh)     per distro/variant
-```
+`build/lib/hummingbird/*.py` owns structured data and rendering;
+`build/lib/ci-*.sh` owns the engine; `docker/*.sh` and `prebuildfs/` are independent
+image-provisioning/runtime libraries.

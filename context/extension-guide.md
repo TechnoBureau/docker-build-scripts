@@ -19,13 +19,11 @@ instead.
 4. build/lib/hummingbird/oscap/ssg-rhel11-ds.xml      vendored datastream (only if scanning)
 ```
 
-Nothing else changes: `setup_newroot.yml.j2` already branches on
-`distro == "hummingbird"` vs "any other distro" (it copies
-`yum-repos/<distro>.repo` and disables the hummingbird repositories),
-`get_rpm_versions.sh` bind-mounts whatever repo files `rpms.in.yaml` references,
-and `hbgen.required_oscap_datastreams` copies only the datastreams the selected
-distros declare.
-
+Also register the distro's default repo/release in `hb_config.py` and its FIPS
+package baseline in `hb_rootfs.FIPS_PACKAGES`. FIPS is enabled by default; an
+unknown distro must not inherit an unverified package set. The package and rootfs
+macros then use the shared policy rather than adding another distro-specific
+branch. `get_rpm_versions.sh` uses the same repo/release plan, per target arch.
 Verify without an engine:
 
 ```bash
@@ -94,7 +92,7 @@ rpm_packages:            # default_rpm_packages: …
   all:        [curl]                  # every variant
   hummingbird: [hummingbird-release]  # one distro
   builder:    [curl-devel]            # one modifier
-  ubi9/fips:  [some-ubi-fips-pkg]     # one distro+variant
+  ubi9/fips:  [openssl-fips-provider] # distro+FIPS modifier (already in baseline)
   build-deps: [cmake]                 # builder stage only, not the newroot
 ```
 
@@ -110,7 +108,9 @@ rpm_packages:
 ```
 
 They become `ARG ARCH_PACKAGES_<arch>` plus a `case "${TARGETARCH}"` install step
-in `install_newroot.yml.j2`.
+in `install_newroot.yml.j2`. `build-deps` entries instead use the builder-stage
+architecture map; they must never be installed into newroot. OCI arch aliases
+are accepted and `arches.only`/`arches.not` are applied together.
 
 **Invariant:** the same resolver feeds `rpms.in.yaml` and `ARG MAIN_PACKAGES` —
 do not add a key in one place only.
@@ -136,7 +136,7 @@ Rules (see `conventions.md` §4):
   template.
 - Keep the explanatory comment inside the macro.
 
-Render one row by hand:
+After prepare → aggregate → rpms (see troubleshooting §1), render one row:
 
 ```bash
 python3 build/lib/hummingbird/hbgen.py render --hbgen <builder>/.hbgen --image <name> \
@@ -150,7 +150,9 @@ cat <builder>/.hbgen/images/<name>/hummingbird/default/Containerfile
 
 ## 5. Add a build-configuration knob
 
-One owner: `hbgen.py:cmd_config`.
+Engine-facing values belong to `hbgen.py:cmd_config`. Rootfs/FIPS/base-image
+policy belongs to `hb_rootfs.py`, and target selection to `hb_platforms.py`.
+Do not add a second resolver in the bash driver.
 
 ```python
 # 1. resolve it (env override > rendered artifact > variables.yml > default)
@@ -215,7 +217,7 @@ oscap:
       profiles: [stig]               # optional; omit = every active profile
       variants: ["*"]                # optional glob filter
   crypto_policy: FIPS                # or per variant:
-  crypto_policy_variants: {builder: DEFAULT}
+  crypto_policy_variants: {builder: FIPS}
   datastreams: {ubi9: ssg-rhel9-ds.xml}
 ```
 
@@ -224,9 +226,10 @@ A new profile name must be added to `OSCAP_PROFILES` in **both**
 one is the renderer's activation list, the other is documentation for the
 driver) — and `verify-compliance` in the builder image must accept `--<profile>`.
 
-Tailoring XML is generated only when at least one rule survives filtering
-(`oscap.has_tailoring`); otherwise no file is written and no `--tailoring-file`
-flag is emitted.
+Tailoring XML is generated when a rule survives filtering **or** an active
+STIG scan needs its resolved crypto policy pinned. With no active scan, no file
+is emitted. Changing the crypto policy does not implicitly opt a variant out
+of FIPS; contradictions are rejected by `hb_rootfs.resolve_rootfs`.
 
 **Test:** pattern D16–D18 and E4.
 
@@ -281,5 +284,30 @@ from the upstream hummingbird containers repository and carry local fixes.
 - [ ] Offline assertion added to `tests/hummingbird/run-tests.sh`
 - [ ] Docs updated: `context/hummingbird-pipeline.md`, `AGENTS.md` §4 knob table,
       `README.md` if user-visible
-- [ ] Backwards compatible, or the change is listed under "Deliberate behaviour
-      changes" in the flaw report / release notes
+- [ ] Backwards compatible, or the change is called out in the commit message
+      and the release notes
+
+
+## 11. Seed a rootfs from a base image
+
+Use `base_image` in properties.yml (literal reference or distro/variant mapping).
+No template-specific base-copy logic is necessary when the template calls
+`setup_newroot()` and `install_newroot()`.
+
+```yaml
+base_image:
+  ubi9: registry.access.redhat.com/ubi9/ubi-minimal:latest
+platforms: [linux/amd64, linux/arm64]
+rpm_packages:
+  all: [curl, ca-certificates]
+```
+
+The rootfs is reset first, seeded once, checked against the selected distro, then
+upgraded and extended. Use a base that supplies every selected platform and pin
+its digest for controlled releases. Image metadata is not inherited by a filesystem
+COPY; declare final environment/user/entrypoint in the template.
+
+**Tests:** extend `BuildContractTests` and `RootfsHelperTests`; cover both no-base
+and base-seeded recipes. Never make newroot a cache mount or copy the tooling
+image into it. Prefer portable final-stage COPY; chunkah is an explicit Podman-only
+mode with different cache/parallelism requirements.

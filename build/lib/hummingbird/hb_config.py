@@ -180,3 +180,27 @@ def as_bool(value: Any, default: bool = False) -> bool:
     if text in ("false", "no", "0", "off", ""):
         return False
     return default
+
+
+# Built-in distro repos take precedence over a generic `default` entry: a UBI
+# build must not query/install from Hummingbird just because its key was omitted.
+DISTRO_RELEASEVERS = {"ubi9": "9", "ubi10": "10"}
+DEFAULT_DISTRO_REPOS = {
+    "hummingbird": ["hummingbird.repo"],
+    "ubi9": ["ubi9.repo"],
+    "ubi10": ["ubi10.repo"],
+}
+
+
+def resolve_repos(variables: dict, properties: dict, distro: str) -> list[str]:
+    """The same selected repo files feed lock inputs, queries and installation."""
+    configured = effective_section(variables, properties, "default_variant_repos")
+    selected = configured.get(distro, DEFAULT_DISTRO_REPOS.get(distro, configured.get("default", [])))
+    additional = properties.get("additional_repos", variables.get("additional_repos", []))
+    repos = as_list(selected) + as_list(additional)
+    if not repos:
+        raise ConfigError(f"no repository files configured for distro '{distro}'")
+    for repo in repos:
+        if not isinstance(repo, str) or Path(repo).name != repo or not repo.endswith(".repo"):
+            raise ConfigError(f"invalid repository filename {repo!r}: use a .repo file in yum-repos/")
+    return list(dict.fromkeys(repos))

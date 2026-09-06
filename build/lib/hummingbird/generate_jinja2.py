@@ -22,13 +22,17 @@ import jinja2
 import yaml
 
 from hb_packages import resolve_package_set
+from hb_rootfs import resolve_rootfs
+from hb_platforms import resolve_platforms, rpm_arches, targetarch
 from hb_config import (
     LIST_POLICY_EXTEND,
+    DISTRO_RELEASEVERS,
     ConfigError,
     as_bool,
     deep_merge,
     load_yaml,
     require_keys,
+    resolve_repos,
 )
 from hb_variant import (
     decompose_variant,
@@ -224,7 +228,14 @@ class ImageContext:
         variant_info = decompose_variant(self.variant)
         variables["variant_base"] = variant_info.base
         variables["is_builder"] = is_builder_variant(self.image_name, self.variant)
-        variables["is_fips"] = variant_info.is_fips
+        rootfs = resolve_rootfs(self.properties["variables"], self.image_properties, self.distro, self.variant)
+        self.rootfs = rootfs
+        variables["is_fips"] = rootfs.fips
+        variables["base_image"] = rootfs.base_image
+        variables["crypto_policy"] = rootfs.crypto_policy
+        variables["chunkah_enabled"] = rootfs.chunkah
+        variables["distro_repos"] = resolve_repos(self.properties["variables"], self.image_properties, self.distro)
+        variables["releasever"] = DISTRO_RELEASEVERS.get(self.distro, "")
         variables["image_repo_name"] = resolve_image_name(self.image_name, self.variant)
 
         # Package name for version/tag lookup (e.g. ruby4.0 for ruby-4-0 on Hummingbird)
@@ -335,6 +346,15 @@ class ImageContext:
             return {}
 
         data = load_yaml(cache_path, ".cache/rpm-versions.yml")
+        # New caches record exactly which target architectures were queried.
+        # Historic flat/per-distro caches remain readable, but never reuse a
+        # known amd64-only cache as proof that an arm64 package exists.
+        by_arch = (data.get("architectures") or {}).get(self.distro)
+        if isinstance(by_arch, dict):
+            requested = rpm_arches(resolve_platforms(self.properties["variables"], self.image_properties))
+            missing = sorted(set(requested) - by_arch.keys())
+            if missing:
+                raise ConfigError(f"RPM versions cache lacks {self.distro} architectures: {', '.join(missing)}; re-run get_rpm_versions.sh")
         per_distro = data.get("distros")
         if isinstance(per_distro, dict):
             versions = per_distro.get(self.distro) or {}
@@ -386,7 +406,7 @@ class ImageContext:
         oscap.setdefault("profiles", {})
         oscap.setdefault("exclude_rules", [])
         oscap.setdefault("datastreams", {})
-        oscap.setdefault("crypto_policy", "")
+        oscap["crypto_policy"] = self.rootfs.crypto_policy
         oscap.setdefault("crypto_policy_variants", {})
         oscap["enabled"] = as_bool(oscap.get("enabled"), default=False)
         oscap["active_profiles"] = []
@@ -422,7 +442,11 @@ class ImageContext:
 
         oscap["active_profiles"] = active_profiles
         oscap["profile_exclude_rules"] = profile_exclude_rules
-        oscap["has_tailoring"] = any(profile_exclude_rules.values())
+        # STIG must receive the same crypto-policy value even when there are no
+        # excluded rules; otherwise scanning and the installed policy can differ.
+        oscap["has_tailoring"] = any(profile_exclude_rules.values()) or (
+            "stig" in active_profiles and bool(self.rootfs.crypto_policy)
+        )
 
     def _set_canonical_name(self, variables: dict) -> None:
         """Set canonical_name, registries and cpe in variables.
@@ -454,21 +478,13 @@ class ImageContext:
         Delegates to hb_packages.resolve_package_set so ARG MAIN_PACKAGES and
         rpms.in.yaml can never disagree about what this variant installs.
         """
-        shared = dict(self.properties["variables"])
-        # An image may extend the shared default packages in its properties.yml.
-        if isinstance(self.image_properties.get("default_rpm_packages"), dict):
-            shared["default_rpm_packages"] = deep_merge(
-                shared.get("default_rpm_packages") or {},
-                self.image_properties["default_rpm_packages"],
-                LIST_POLICY_EXTEND,
-            )
-
         package_set = resolve_package_set(
-            self.image_properties, shared, self.distro, self.variant
+            self.image_properties, self.properties["variables"], self.distro, self.variant
         )
         variables["main_packages"] = package_set.main
         variables["build_packages"] = package_set.build
         variables["arch_specific_packages"] = package_set.arch_packages
+        variables["build_arch_specific_packages"] = package_set.build_arch_packages
 
     def _build_variant_labels(self) -> dict[str, str]:
         """Build structured variant labels for inject_labels."""
@@ -494,7 +510,7 @@ class ImageContext:
         }
         if variant_info.is_builder:
             labels["io.hummingbird-project.variant.builder"] = "true"
-        if variant_info.is_fips:
+        if self.rootfs.fips:
             labels["io.hummingbird-project.variant.fips"] = "true"
         return labels
 
@@ -605,7 +621,9 @@ class ImageContext:
             m.read_text(encoding="utf-8") for m in sorted(macros_dir.glob("*.yml.j2"))
         )
         full_template = macros + "\n" + template
-        return jinja2.Template(full_template, undefined=jinja2.StrictUndefined).render(**variables)
+        environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
+        environment.filters["targetarch"] = targetarch
+        return environment.from_string(full_template).render(**variables)
 
     def write_output_file(self, content: str) -> bool:
         """Write content to the output file; skip empty renders.

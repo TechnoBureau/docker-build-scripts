@@ -150,7 +150,7 @@ main_build() {
                 remove_docker_images "${HB_BUILT_IMAGES[@]}"
             fi
         else
-            log_warn "No images were built"
+            log_info "Build completed without publishing image tags"
         fi
 
         log_success "Build pipeline completed successfully"
@@ -273,7 +273,7 @@ main_build() {
             remove_docker_images "${CI_BUILT_IMAGES[@]}"
         fi
     else
-        log_warn "No images were built"
+        log_info "Build completed without publishing image tags"
     fi
 
     log_success "Build pipeline completed successfully"

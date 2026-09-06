@@ -53,7 +53,8 @@ calling the container engine itself.
 | `ci-config.sh` | Precedence merge into `CONFIG`, registry arrays, git metadata | `load_config`, `build_registries_array`, `build_sign_registries_array`, `extract_git_info` |
 | `ci-registry.sh` | Logins and credential lookup (env, `dockerconfigjson`, registry-specific keys) | `ci_login_all_registries`, `ci_login_to_registry` |
 | `ci-ecr.sh` | Best-effort ECR repository auto-create | `ci_ensure_ecr_repository` |
-| `ci-build.sh` | The engine: buildx/binfmt setup, tag generation, build, push, multi-arch, chunkah workarounds | `ci_setup_buildx`, `ci_build_and_push` |
+| `ci-build.sh` | Build flags, binfmt, registry hand-off and shared orchestration | `ci_setup_buildx`, `ci_build_and_push` |
+| `ci-platforms.sh` | Docker buildx indexes, Podman per-platform workers/manifests, local no-push output | `ci_normalize_platforms`, `ci_build_docker_platforms`, `ci_build_podman_platforms` |
 | `ci-artifacts.sh` | Artifact records: digest/size capture, IBM Cloud toolchain store with a local fallback, summary rendering | `ci_collect_image_metadata`, `ci_store_artifact`, `ci_ibmcloud_save_artifact`, `ci_generate_artifact_summary` |
 | `ci-utils.sh` | Repo loading, image removal, cosign signing | `load_repository`, `remove_docker_images`, `sign_with_cosign` |
 | `ci-promote.sh` | Promotion helpers used by `build/promotion.sh` | `ci_promote_*` |
@@ -77,12 +78,13 @@ between a flavour and the engine.
 | `CUSTOM_TAGS` | Space-separated tags when strategy is `custom` | both flavours |
 | `DF_REGISTRY_<i>` / `_PREFIX` / `_PUSH` | Registry list, positional | `ci-dockerfile.sh`, hummingbird |
 | `YAML_REGISTRY_<i>`, `ENV_REGISTRY_*` | Same, lower precedence sources | `ci-yaml.sh`, `ci-config.sh` |
-| `PLATFORMS` | `linux/amd64,linux/arm64` | both flavours |
-| `CHUNKAH` | `true` enables the oci-archive workarounds | hummingbird |
+| `PLATFORMS` | Canonical OCI platform list; Hummingbird resolves properties/variables/native before hand-off | both flavours |
+| `CHUNKAH` | Explicit legacy Podman assembly; serial and uncached. Default is portable COPY | hummingbird |
 | `ARG_<name>` | Auto-passed as `--build-arg <name>=$<name>` from env | both flavours |
 | `SECRET_<id>` | Auto-materialised as `--secret id=<id>` | `ci-secrets.sh` |
 | `GIT_*` | Commit metadata for labels | `extract_git_info` |
 | `DISTRO`, `VARIANT` | Hummingbird row identity (informational) | hummingbird |
+| `PUSH` | Global publish permission; `SKIP_PUSH=true` is an additional hard veto | both flavours |
 
 Registry precedence is resolved by `build_registries_array()` into the global
 `REGISTRIES` array as `"name,prefix,push"` strings:
@@ -103,6 +105,19 @@ Tag strategies live in `ci_generate_tag()` (`ci-core.sh`): `version`, `runner`,
 
 There is no `version-only`, `latest-only` or `git-sha`; an unrecognised value
 warns and falls back to `latest`.
+
+### Platform output
+
+- Docker multi-arch: one `buildx build --push` publishes the completed index.
+- Podman multi-arch: private image IDs per worker, then a serial manifest join
+  and `manifest push --all` after every worker succeeds. Instance references
+  explicitly use `containers-storage:`; no registry lookup is attempted for local IDs.
+- No-push builds retain local output. Docker multi-arch exposes `CI_IMAGE_ARCHIVE`
+  (`BUILD_OUTPUT_DIR`, default `<context>/.ci-output/`); Podman exposes
+  `CI_LOCAL_MANIFEST`. Single-arch builds receive a local tag.
+- `PARALLEL_PLATFORMS` controls Podman workers; Docker buildx schedules its workers.
+- Explicit chunkah mode disables cache replay and parallel workers. Ordinary
+  generated images use a real multi-stage COPY dependency instead of a host archive.
 
 ## 4. Configuration precedence
 
@@ -135,10 +150,13 @@ HB_* environment override  >  rendered artifact (VERSION/TAGS)  >  variables.yml
 | --- | --- |
 | Add a tag strategy | `ci_generate_tag()` in `ci-core.sh` |
 | Add a registry credential source | `ci-registry.sh` |
-| Change what gets pushed/built | `ci-build.sh` |
+| Change build arguments/publish permission | `ci-build.sh` |
+| Change platform workers or manifests | `ci-platforms.sh` |
 | Add a hummingbird config knob | `hbgen.py:cmd_config` (+ `ci_hummingbird_configure` mapping) |
 | Change variant naming | `hb_variant.py` |
-| Change which packages are installed | `hb_packages.py` |
+| Change which packages are installed | `hb_packages.py`; FIPS baseline in `hb_rootfs.py` |
+| Change base-image/rootfs behavior | `hb_rootfs.py`, `rootfs.sh`, rootfs macros |
+| Change target selection or version queries | `hb_platforms.py`, `hb_versions.py` |
 | Change generated Containerfile content | `macros/*.yml.j2`, `templates/*.j2` |
 | Change the work-tree layout | `hbgen.py:cmd_prepare` (+ the path helpers in `ci-hummingbird.sh`) |
 | Add a new flavour | new `ci-<flavour>.sh` + a branch in `main_build` |

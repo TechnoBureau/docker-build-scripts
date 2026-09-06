@@ -1,5 +1,5 @@
 # curl builder fixture.
-# Exercises: multiple distros, a distro-restricted variant, a composite builder
+# Exercises: multiple distros, a distro-restricted debug variant, a composite builder
 # variant ("fips-builder"), FIPS crypto policy, per-distro datastreams, and a
 # per-image variables.yml overlay.
 summary: curl image
@@ -27,9 +27,9 @@ variants:
   - builder
 
 additional_variants:
-  # Restricted to hummingbird: the ubi9 repositories do not carry the FIPS
-  # package set, so ubi9/fips must never enter the build matrix.
   - name: fips
+  # A user-defined restriction still applies. FIPS itself works on both distros.
+  - name: debug
     distros:
       - hummingbird
   # Composite modifier: builder AND fips. Regression fixture for variant names
@@ -41,3 +41,8 @@ oscap:
   datastreams:
     ubi9: ssg-rhel9-ds.xml
     ubi10: ssg-rhel10-ds.xml
+
+# Exercise the optional legacy archive path; the default assembly is portable.
+chunkah: true
+variant_descriptions:
+  debug: Diagnostic image

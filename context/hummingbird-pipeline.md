@@ -1,222 +1,218 @@
 # Hummingbird pipeline
 
-The hummingbird flavour builds **reproducible, compliance-scanned RPM images**
-from a declarative definition, instead of hand-writing a Dockerfile.
+Current build contract for the declarative RPM builder. The **flavour** is named
+`hummingbird`; its supported **distros** are `hummingbird`, `ubi9` and `ubi10`.
+UBI is not a separate build flavour.
 
-One builder directory → a matrix of images:
+## 1. Definitions and defaults
+
+A builder contains `properties.yml` and `Containerfile.j2`, plus shared and/or
+per-image `variables.yml`. One definition becomes distro × variant rows. Each
+row can produce one architecture or a manifest containing both supported arches.
+
+| Concept | Meaning |
+| --- | --- |
+| distro | Package repository/release policy, independent of architecture |
+| variant | `default`, `builder`, `fips`, `fips-builder`, or an image-defined name |
+| modifier | A name suffix parsed by `hb_variant`, e.g. `builder` or `fips` |
+| newroot / newrootfs | The target filesystem at `${NEWROOT}` (default `/new-root-fs`) inside the builder stage |
+| base image | An explicitly selected filesystem seed; **not** the tooling image |
+| tooling image | `quay.io/hummingbird-ci/hummingbird-builder:latest`, which supplies DNF and build tools |
+
+The **`default` variant is FIPS-enabled**, as are other variants unless explicitly
+opted out. Its name and unsuffixed tags are preserved. Omitting `default_variants`
+and `variants` selects `[default]`; it does not omit security packages.
+
+Name decomposition and effective security policy are separate:
+
+- `hb_variant.decompose_variant` parses suffixes and the base name.
+- `hb_rootfs.resolve_rootfs` resolves effective `is_fips`, packages and crypto policy.
+- Builder modifiers publish `<image>-builder`; other variants share `<image>`
+  and use variant-suffixed tags. The `name=` label uses that same repository rule.
+- Explicit `additional_variants[].distros` restrictions still apply. Do not add a
+  Hummingbird-only restriction to `fips` if it should also build for UBI.
+
+## 2. Stages and work tree
 
 ```
-builders/curl/                       .hbgen/images/curl/
-├── properties.yml      what         ├── hummingbird/default/   → curl:8.21.0
-├── Containerfile.j2    how          ├── hummingbird/builder/   → curl-builder:8.21.0-builder
-├── variables.yml       overrides    ├── hummingbird/fips/      → curl:8.21.0-fips
-├── rootfs/  src/       context      ├── ubi9/default/          → curl:8.10.1
-└── .gitmodules         submodules   └── ubi9/builder/          → curl-builder:8.10.1-builder
+prepare → aggregate → rpms → versions → render → configure/build each matrix row
 ```
 
-## 1. Concepts
-
-| Term | Meaning | Declared in |
+| Stage | Command | Output / requirement |
 | --- | --- | --- |
-| **builder** | A directory with `properties.yml` + `Containerfile.j2` | — (detected) |
-| **distro** | Package universe the newroot is installed from: `hummingbird`, `ubi9`, `ubi10` | `default_distros` / `distros:` |
-| **variant** | Build flavour of one definition: `default`, `builder`, `fips`, composites like `fips-builder`, `fpm-fips-builder` | `default_variants`, `variants:`, `additional_variants:` |
-| **modifier** | Suffix of a variant name that changes behaviour: `builder`, `fips` | `hb_variant.MODIFIER_SUFFIXES` |
-| **newroot** | The image filesystem assembled by `dnf-installroot` inside a builder stage | `macros/setup_newroot.yml.j2` |
-| **chunkah** | Tool that flattens the newroot into an OCI archive (`out.ociarchive`), consumed by `FROM oci-archive:` | `macros/final_stage.yml.j2` |
-| **work tree** | `.hbgen/` — a reconstruction of the upstream hummingbird repo layout | `hbgen.py prepare` |
+| prepare | `hbgen.py prepare --image-dir D --builders-dir B` | Recreates `D/.hbgen`, merges variables, copies context and builder helpers |
+| aggregate | `aggregate_properties.py` with cwd `.hbgen` | `.cache/properties.json`: variants and distro restrictions |
+| rpms | `hbgen.py rpms --hbgen H --image N` | Per-row `rpms/rpms.in.yaml`, with the selected RPM architectures |
+| versions | `ci/get_rpm_versions.sh` with cwd `.hbgen` | Queries packages per distro **and target architecture**; requires an engine/network |
+| render | `hbgen.py render --hbgen H --image N` | `Containerfile`, `VERSION`, `TAGS`, optional tailoring file |
+| configure | `hbgen.py config --hbgen H --image N --distro D --variant V` | TAB-separated values for the bash `CONFIG` array |
+| build | `ci_build_and_push Containerfile context` | Shared Docker/Podman engine, one or multiple architectures |
 
-Variant names decompose (see `hb_variant.decompose_variant`):
-
-```
-default          → base=default          builder=false fips=false
-builder          → base=default          builder=true
-fips             → base=default          fips=true
-fpm              → base=fpm
-fpm-fips-builder → base=fpm              builder=true  fips=true   (order-independent)
-```
-
-Only `builder` changes the published repository name (`curl` → `curl-builder`).
-Every other variant shares the repository and is distinguished by its **tag**
-(`TAGS.j2` appends `-<variant>`), which keeps `name=` labels truthful.
-
-## 2. Pipeline stages
-
-`ci_hummingbird_generate` runs five stages; each is a separate command you can
-re-run by hand while debugging.
+Stages are cumulative: `matrix` needs prepare + aggregate; render also needs
+rpms. For offline inspection render may omit versions; unresolved tags are
+removed by config with a warning. See the runnable sequence in
+[troubleshooting](troubleshooting.md).
 
 ```
- builder dir ──► 1 prepare ──► 2 aggregate ──► 3 rpms ──► 4 versions ──► 5 render ──► build loop
-                   hbgen.py      aggregate_      hbgen.py    get_rpm_       hbgen.py     ci_build_
-                                 properties.py               versions.sh                 and_push
-                   needs:        needs:          needs:      needs:         needs:       needs:
-                   pyyaml        pyyaml          pyyaml      engine+network jinja2       engine
+<builder>/.hbgen/
+├── ci/get_rpm_versions.sh, ci/internal/  links to vendored tools
+├── macros/, templates/, yum-repos/      generator inputs
+├── images/variables.yml                 merged defaults + selected platforms
+├── images/<image>/                     actual engine build context
+│   ├── properties.yml, Containerfile.j2
+│   ├── hb-scripts/rootfs.sh             builder-only operations
+│   ├── yum-repos/, oscap/               only selected datastreams are copied
+│   ├── rootfs/, src/, prebuildfs/       optional template inputs
+│   └── <distro>/<variant>/             generated Containerfile, tags, RPM inputs
+└── .cache/                             properties and version caches
 ```
 
-| # | Command | Input | Output | Why it exists |
-| --- | --- | --- | --- | --- |
-| 1 | `hbgen.py prepare --image-dir D --builders-dir B` | builder dir, `variables.yml` | `.hbgen/` tree, merged `images/variables.yml`, context files, selected SCAP datastreams | Reconstructs the upstream layout so vendored generators run unchanged |
-| 2 | `aggregate_properties.py` (cwd = `.hbgen`) | `images/*/properties.yml` | `.cache/properties.json`, `.cache/properties.mk` | Computes the authoritative variant list (`variants` + `additional_variants`) and the distro restrictions |
-| 3 | `hbgen.py rpms --hbgen H --image N` | properties cache | `<distro>/<variant>/rpms/rpms.in.yaml` per row | Input for lockfiles and version resolution |
-| 4 | `ci/get_rpm_versions.sh` (cwd = `.hbgen`) | `rpms.in.yaml`, distro repos | `.cache/rpm-versions.yml` (per distro) | Real package versions → real version tags |
-| 5 | `hbgen.py render --hbgen H --image N` | everything above | `VERSION`, `TAGS`, `oscap-tailoring.xml`, `Containerfile` per row | The artifacts the engine builds from |
+`.hbgen/` is disposable and gitignored. Context `rootfs/` files are available to
+custom templates but are **not automatically copied into newroot**.
 
-Then the driver loops the matrix:
+## 3. Module ownership
 
-```
-ci_hummingbird_matrix   → "distro<TAB>variant<TAB>image_name" rows
-ci_hummingbird_configure → CONFIG[] for one row (via `hbgen.py config`)
-ci_build_and_push        → shared engine
-ci_hummingbird_cleanup_archives → once, after the last row
-```
+| Owner | Behaviour |
+| --- | --- |
+| `ci-hummingbird.sh` | Paths, orchestration, per-row config reset, engine hand-off |
+| `hbgen.py` | Work tree, selection/matrix, render stages, per-row config |
+| `hb_config.py` | YAML/merges, repo filenames, distro release versions |
+| `hb_variant.py` | Variant name decomposition and published image name |
+| `hb_rootfs.py` | Base-image selection, FIPS package baseline, crypto policy, assembly mode |
+| `hb_platforms.py` | Hummingbird/UBI target selection and OCI ↔ RPM architecture names |
+| `hb_packages.py` | Runtime/build package groups, including architecture constraints |
+| `hb_versions.py` | Version-query plan, result validation and request-scoped cache |
+| `get_rpm_versions.sh` | Executes that query plan with the container engine |
+| `generate_jinja2.py` | Template context, labels, tags, OSCAP tailoring |
+| `rootfs.sh` | Image-side reset, base validation, crypto-policy setup and cleanup |
+| `ci-platforms.sh` | Shared Docker/Podman platform execution and manifests |
 
-## 3. Module responsibilities
-
-```
-ci-hummingbird.sh   bash orchestration only: paths, logging, engine, loop
-   │                (no YAML parsing, no Jinja, no matrix logic)
-   ▼
-hbgen.py            pipeline CLI — one subcommand per stage
-   ├── hb_config.py     YAML loading, deep merge, required-key validation
-   ├── hb_variant.py    variant decomposition, image naming
-   ├── hb_packages.py   package-set resolution (main/build/arch-specific)
-   └── generate_jinja2.py  ImageContext: template variables, labels, tags
-          └── macros/*.yml.j2, templates/*.j2
-aggregate_properties.py   properties → cache (vendored generator)
-generate_rpms_in.py       cache → rpms.in.yaml (vendored generator)
-get_rpm_versions.sh       repos → .cache/rpm-versions.yml (needs an engine)
-```
-
-Rule: **bash orchestrates, Python decides.** Nothing in bash parses YAML; every
-`hbgen.py` subcommand can be run standalone.
+Bash orchestrates; Python resolves structured data. Macros render already-resolved
+values rather than recomputing package sets or security policy.
 
 ## 4. Configuration
 
-### 4.1 Files
+Shared `builders/variables.yml` + per-image `variables.yml` use **list replace**
+semantics. Image properties overlay the resulting defaults; package groups and
+OSCAP lists accumulate through `hb_config.effective_section`.
 
-```
-builders/variables.yml          shared defaults for every builder   (base)
-builders/<image>/variables.yml  per-image overrides                (overlay)
-builders/<image>/properties.yml image definition
-```
+### Core keys
 
-`base` + `overlay` are deep-merged with **list policy = replace** (an override
-`default_distros: [ubi9]` selects ubi9 only). The merged result is written to
-`.hbgen/images/variables.yml` and is the single configuration source for every
-later stage. At least one of the two files must exist.
-
-Properties are merged on top of variables for the template context with
-**list policy = extend** (a per-image `oscap.exclude_rules` adds to the global
-ones). Both merges are the same function, `hb_config.deep_merge`, with an
-explicit policy argument.
-
-### 4.2 `variables.yml` keys
-
-| Key | Used for |
+| Key | Contract |
 | --- | --- |
-| `default_distros` | distros when `properties.yml` has no `distros:` |
-| `default_variants` | variants when `properties.yml` has no `variants:` |
-| `registry`, `registries` | push targets (`registries` may be strings or `{name, prefix, push}` maps) |
-| `default_user` | uid/name behind `container_user: default` |
-| `labels` | `maintainer`, `vendor`, `source_url` |
-| `variant_descriptions` | `io.hummingbird-project.variant.description` (keyed by **base** name) |
-| `default_rpm_packages` | package groups shared by all builders: `all`, `builder`, `fips`, `<variant>` |
-| `default_variant_repos` | distro → repo file names from `yum-repos/` |
-| `oscap` | `enabled`, `profiles.{cis,stig}`, `exclude_rules[]`, `datastreams`, `crypto_policy`, `crypto_policy_variants` |
-| `platforms` | multi-arch (`linux/amd64,linux/arm64`) |
-| `skip_push` | build without pushing |
+| `default_distros`, `distros` | Default and per-image distro selection; `HB_DISTROS` overrides |
+| `default_variants`, `variants`, `additional_variants` | Default/image variants and optional distro restrictions |
+| `fips` | Defaults to `true`; boolean or a scoped mapping. FIPS-named variants cannot disable it |
+| `base_image` | Absent/`scratch` → empty start. Otherwise a reference or scoped mapping |
+| `platforms` | String/list of `linux/amd64`, `linux/arm64`; omission → runner native |
+| `chunkah` | Defaults to `false`. Explicit `true` selects legacy Podman archive assembly |
+| `rpm_packages`, `default_rpm_packages` | Image/shared groups (`all`, distro, variant, distro/variant, modifiers, base, `build-deps`) |
+| `default_variant_repos`, `additional_repos` | Repo filenames used identically for queries and installation; built-in distro repo defaults exist |
+| `oscap` | Scan enablement/profiles/rule exclusions/datastreams; does **not** switch FIPS off |
+| `registry`, `registries`, `skip_push` | Push defaults; shared engine/HB environment overrides apply |
+| `default_user`, `user` | Default UID and variant/user mapping |
 
-### 4.3 `properties.yml` keys
+`base_image` and `fips` mappings resolve `distro/variant` > distro > variant >
+`default`. Image-level settings override shared settings. Required properties
+for rendering labels/tags remain `description`, `summary`, `url`, `stream`, `tags`.
 
-Required: `description`, `summary`, `url`, `stream`, `tags`.
-Common: `main_package`, `version_package`, `rpm_packages`, `variants`,
-`additional_variants`, `distros`, `user`, `registries`, `repository`,
-`support_level`, `tag_suffix_aliases`, `additional_repos`, `build_from_source`,
-`variant_descriptions`, `oscap`, `remove_rpms_from_newroot`.
+### FIPS baseline
 
-`tags` is itself a Jinja list, rendered before use:
+Every FIPS-enabled rootfs includes:
+
+- `crypto-policies`, `crypto-policies-scripts`
+- `openssl`, `openssl-libs`
+- `openssl-fips-provider`, `openssl-fips-provider-so`
+- Hummingbird only: `openssl-config-fips`
+
+Additional `fips` and `<distro>/fips` package groups extend that baseline, including
+for `default` and composite builder variants. `fips: false` is an explicit opt-out
+for non-FIPS-named variants. Contradictory crypto policies are rejected.
+
+The rootfs helper installs the selected distro's policy definitions without
+executing foreign rootfs binaries; it fails if FIPS definitions/provider are
+missing. Scanning and FIPS policy selection are independent. **FIPS packages and
+policy are not a certification claim**: validated module versions, application
+crypto usage, and a suitably configured FIPS host/runtime still need verification.
+
+### Base-image example
 
 ```yaml
-tags:
-  - value: "{{ package_version(package_name_for_version) }}"
-    label: org.opencontainers.image.version
-  - value: "{{ package_major_minor_version(package_name_for_version) }}"
-    label: io.hummingbird-project.major-minor-version
-  - value: latest
+# properties.yml (in addition to description/summary/url/stream/tags)
+distros: [hummingbird, ubi9, ubi10]
+platforms: [linux/amd64, linux/arm64]
+fips: true
+base_image:
+  ubi9: registry.access.redhat.com/ubi9/ubi-minimal:latest
+  ubi10: registry.access.redhat.com/ubi10/ubi-minimal:latest
+  # No hummingbird entry: that row starts empty.
+rpm_packages:
+  all: [curl, ca-certificates]
+  build-deps:
+    - name: gcc
+      arches: {only: aarch64}
 ```
 
-### 4.4 Environment knobs
+For repeatable releases, pin base/tooling references and package repositories to
+approved versions. A multi-arch base digest must identify a multi-arch index, or
+build just the architecture that digest supplies. The seed must match the target
+RPM distro/release; existing `os-release` metadata is checked before updating it.
+Only filesystem content is inherited: define `USER`, `ENV`, `ENTRYPOINT`, etc.
+in the template, not by relying on base-image metadata.
 
-| Variable | Effect |
-| --- | --- |
-| `HB_DISTROS` | Override distro selection (`"ubi9"`, `"hummingbird ubi9"`) |
-| `HB_VARIANTS` | Select variants; validated against the aggregated list |
-| `HB_VERSION` | Override the resolved package version |
-| `HB_TAGS` | Override the generated tag list (space separated) |
-| `HB_REGISTRIES` | Comma-separated registries (with `IMAGE_PREFIX`) |
-| `HB_SKIP_RPM_VERSIONS` | `true` skips stage 4 (no engine needed) |
-| `HB_RPM_VERSIONS_TTL` | Reuse `.cache/rpm-versions.yml` younger than N seconds |
-| `HB_PYTHON` | Interpreter for all generators (venv/pinned python) |
-| `HUMMINGBIRD_DIR` | Vendored machinery location (default `build/lib/hummingbird`) |
-| `SKIP_PUSH`, `PLATFORMS`, `REGISTRY`, `IMAGE_PREFIX`, `SOURCE_DATE_EPOCH`, `DEBUG` | Shared engine overrides |
+## 5. Rootfs lifecycle and macros
 
-Precedence for every build value is implemented once, in `hbgen.py:cmd_config`
-— its docstring is the reference table.
-
-## 5. Macros and templates
-
-`macros/*.yml.j2` are concatenated in filename order and prepended to every
-template, so any macro can call any other. Rendered with
-`jinja2.StrictUndefined`: an unknown variable is a hard error, never an empty
-string.
+```text
+blank root → optional base COPY → distro check → filesystem bootstrap
+           → upgrade inherited packages (base only)
+           → install selected runtime + FIPS + arch packages
+           → policy + optional scan → cleanup → final image
+```
 
 | Macro | Emits |
 | --- | --- |
-| `setup_newroot()` | builder stage `FROM`, `ARG NEWROOT/DNF_CACHE/DNF_FLAGS`, distro repo `COPY`, package `ARG`s, `filesystem` bootstrap |
-| `main_packages_arg()` / `build_packages_arg()` | `ARG MAIN_PACKAGES`, `ARG ARCH_PACKAGES_<arch>`, `ARG BUILD_PACKAGES` |
-| `install_newroot()` | `dnf-installroot` of `${MAIN_PACKAGES}`, arch-specific `case "${TARGETARCH}"`, crypto-policy pinning, `verify_compliance()` |
-| `cleanup_newroot()` | licence/locale removal (**non-builder only**), sqlite journal-off, cache/machine-id purge |
-| `verify_compliance()` | `verify-compliance` with the right datastream, profiles, tailoring file |
-| `final_stage()` | `chunkah build > /run/src/out.ociarchive`, `FROM oci-archive:`, labels, default-user env |
-| `set_user()` | `USER` |
-| `is_builder_variant()` | `"true"`/`"false"` string (kept for existing templates; prefer `is_builder`) |
-| `package_version()`, `package_major_version()`, `package_major_minor_version()`, `git_submodule_hash()` | version strings from `rpm_versions` or submodule labels |
-| `image_metadata_labels()`, `inject_source_info_labels()` | `LABEL` lines |
+| `setup_newroot()` | Optional base stage, tooling stage, isolated distro repos, **reset**, seed COPY, build deps, filesystem bootstrap |
+| `install_newroot()` | Seed upgrade if present, runtime/architecture packages, crypto policy, optional compliance scan |
+| `cleanup_newroot()` | Optional runtime removals, licence/locale policy, actual database cleanup, FIPS presence recheck |
+| `final_stage()` | Default `FROM scratch` + `COPY --from=builder ${NEWROOT}/ /`, then labels/user environment |
+| `main_packages_arg()` / `build_packages_arg()` | Deterministically resolved package ARGs |
+| `set_user()` | Selected final `USER` |
 
-Template variables available to `Containerfile.j2` (built by
-`generate_jinja2.ImageContext`): everything in the merged variables and
-properties, plus `variant`, `variant_base`, `is_builder`, `is_fips`,
-`image_name`, `image_repo_name`, `distro`, `container_user`, `package_name_for_version`,
-`main_packages`, `build_packages`, `arch_specific_packages`, `rpm_versions`,
-`gitmodules`, `tags`, `tag_values`, `registries`, `canonical_name`, `cpe`,
-`inject_labels`, `oscap` (always defined, with `enabled`, `active_profiles`,
-`profile_exclude_rules`, `has_tailoring`, `datastreams`, `crypto_policy`,
-`crypto_policy_variants`).
+Build dependencies—including architecture-specific ones—stay out of the runtime
+rootfs. DNF metadata caches are separate from newroot and scoped by distro/arch.
+The portable final stage creates an explicit dependency on the builder; it never
+reads a shared host-side OCI archive.
 
-## 6. Invariants (do not break)
+With `chunkah: true`, the engine requires Podman, serializes architectures and
+disables layer-cache replay because a bind-mount archive is not a cached layer
+output. Docker rejects that mode with an actionable error.
 
-1. The matrix honours `additional_variants[].distros` restrictions.
-2. Package versions are resolved **per distro**; `.cache/rpm-versions.yml` is
-   nested under `distros:`.
-3. `is_builder` / `is_fips` / variant base come from `hb_variant` only.
-4. `rpms.in.yaml` and `ARG MAIN_PACKAGES` are produced by the same resolver.
-5. The `name=` label equals `registry/<published repository>`.
-6. `oscap` is always defined in the template context.
-7. `out.ociarchive` lives until the last matrix row is built.
-8. Only the SCAP datastreams of the selected distros enter the build context.
-9. The build context passed to the engine is `.hbgen/images/<image>` — the
-   macros reference context-relative paths (`yum-repos/…`, `oscap/…`) and
-   `/run/src/…` (the bind mount of that same directory).
+## 6. Platform and version contract
 
-## 7. Deltas from the upstream vendored generators
+`PLATFORMS` > `properties.yml platforms` > merged `variables.yml platforms` >
+runner native. OCI/RPM aliases (`amd64`/`x86_64`, `arm64`/`aarch64`) are accepted;
+unknown or empty selections fail rather than silently building native.
 
-`aggregate_properties.py`, `generate_rpms_in.py` and `generate_jinja2.py` are
-vendored from the upstream hummingbird containers repository and carry local
-fixes. Keep this list current when re-vendoring:
+`rpms.in.yaml` and queries use the same selected architectures. Repoquery runs
+native with `--forcearch`/`--arch` selecting target packages, so it needs no QEMU.
+Image builds do need native workers or emulation for each target. `INSTALL_BINFMT`
+(`auto|false|force`) applies to a single foreign target too.
 
-| File | Local delta |
-| --- | --- |
-| `aggregate_properties.py` | exports `variant_distros` + `distros` into the cache; actionable errors for missing/empty `variables.yml` |
-| `generate_rpms_in.py` | package set delegated to `hb_packages.resolve_package_set` |
-| `generate_jinja2.py` | `oscap` always defined; required-property validation; gitmodules resolved from the image dir and via `git submodule status`; per-distro `rpm-versions.yml`; `canonical_name` via `hb_variant`; empty renders skipped; variant/package sets from the shared modules |
-| `get_rpm_versions.sh` | per-distro cache format; single scan of `rpms.in.yaml`; one `repoquery` per distro; `HB_PYTHON`/`HB_RPM_VERSIONS_TTL` support |
+The version cache contains `distros`, `architectures`, and a request fingerprint.
+TTL reuse requires matching packages, repositories, builder reference and arches.
+Missing packages fail by distro/arch; conflicting versions across a requested
+manifest fail rather than choosing whichever result happened to be last. Older
+flat/per-distro caches remain readable, but cannot attest architecture coverage.
+
+Docker multi-arch uses one buildx build/index push. Podman builds separate image
+IDs and assembles/pushes one manifest after all workers succeed. Without push,
+Docker retains an OCI archive (`BUILD_OUTPUT_DIR`, default `.ci-output/`);
+Podman retains a local manifest (`CI_LOCAL_MANIFEST`).
+
+## 7. Integration contracts when re-vendoring
+
+Keep the shared resolver imports in all three generators, the normalized
+`ImageContext` fields (`is_fips`, `base_image`, `crypto_policy`, `chunkah_enabled`,
+`distro_repos`, `releasever`, both arch-specific package maps), and the image-side
+`rootfs.sh` context copy. `ci/internal` exposes the version tooling from a prepared
+tree. Re-run [all offline tests](../tests/README.md) before using new upstream code.

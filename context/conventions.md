@@ -8,7 +8,7 @@ behaviour instead of style, and so an agent produces diffs that belong here.
 | Layer | Language | Rule |
 | --- | --- | --- |
 | Orchestration, logging, container engine | bash | Never parse YAML/JSON in bash |
-| Configuration, matrix, rendering | Python 3.9+ | Never invoke the container engine from Python |
+| Configuration, matrix, rendering | Python 3.10+ | Never invoke the container engine from Python |
 | Generated image content | Jinja2 | Never compute package sets or names in Jinja |
 
 The seam between them is narrow and explicit: bash calls `hbgen.py` subcommands
@@ -71,23 +71,22 @@ Comment **why**, never what. The convention in this repository is a `WHY:`
 prefix for anything a future reader might "simplify" into a bug:
 
 ```bash
-# WHY only out-*.ociarchive: the hummingbird final stage reads
-# `FROM oci-archive:out.ociarchive` from the same context; when the engine
-# replays that RUN from its layer cache the file is not rewritten, so deleting
-# it here would fail the next row with "archive file not found".
+# WHY --no-cache for chunkah: its bind-mounted OCI archive is not a layer
+# output. Retaining the file does not make a cached RUN safe across target
+# architectures; the next worker must recreate its own archive.
 ```
 
-Keep existing `WHY:` comments. Each one encodes an incident.
+Keep useful `WHY:` comments, and update obsolete ones when the contract changes.
 
 ## 3. Python
 
-- Python 3.9+ typing (`dict[str, Any]`, `X | None`), `from __future__ import
+- Python 3.10+ typing (`dict[str, Any]`, `X | None`), `from __future__ import
   annotations` where needed.
 - **Module docstring states the contract**: what it owns, who calls it, what the
   data shapes are. These modules are the documentation for the pipeline.
 - Small pure functions over classes; the one class (`ImageContext`) exists
   because rendering genuinely carries state.
-- `dataclass(frozen=True)` for value objects (`VariantInfo`, `PackageSet`).
+- `dataclass(frozen=True)` for value objects (`VariantInfo`, `PackageSet`, `RootfsConfig`).
 - **Errors**: raise `hb_config.ConfigError` with a message that names the file,
   the key and the fix. Entry points catch it and print one line — a traceback is
   a bug, not an error report.
@@ -132,10 +131,11 @@ Keep existing `WHY:` comments. Each one encodes an incident.
 
 ## 6. Tests
 
-- `tests/hummingbird/run-tests.sh` is the regression suite. It is **offline**:
-  stub engine (`stubs/podman`), stub vendored tree, fixture builders.
+- `tests/run-tests.sh` runs all offline suites: shell regressions, Python
+  rootfs/platform/version contracts, and the real shared engine with recording
+  Docker/Podman executables. See `tests/README.md` for their boundaries.
 - One assertion per behaviour, id-prefixed (`B5`, `D20`, `F9`) and cross-linked
-  from `flaw-report-hummingbird.md` and `AGENTS.md` §3.
+  from `AGENTS.md` §3.
 - Every fixed flaw gets an assertion. Every new knob gets one too.
 - Fixtures live in `tests/hummingbird/fixtures/` and are copied to a temp dir
   before use, so the checkout is never written to.

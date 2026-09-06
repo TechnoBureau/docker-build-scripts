@@ -29,7 +29,10 @@ from pathlib import Path
 
 import yaml
 
+from hb_config import ConfigError, resolve_repos
 from hb_packages import resolve_package_set
+from hb_platforms import resolve_platforms, rpm_arches
+import sys
 
 
 class IndentedListDumper(yaml.SafeDumper):
@@ -72,19 +75,13 @@ def main() -> None:
     image_data = cache["images"][image_name]
     properties = image_data["properties"]
 
-    # Determine repositories (keyed by distro)
-    default_variant_repos = variables.get("default_variant_repos", {})
-    distro_repos = default_variant_repos.get(
-        distro,
-        default_variant_repos.get("default", []),
-    )
-    additional_repos = properties.get("additional_repos", [])
+    repos = resolve_repos(variables, properties, distro)
 
     # Determine relative paths from rpms/ directory to yum-repos/
     # (os.path.relpath works with Python < 3.12, unlike Path.relative_to(walk_up=))
     repofiles = [
         os.path.relpath(base_dir / "yum-repos" / repo, rpms_in_path.parent)
-        for repo in distro_repos + additional_repos
+        for repo in repos
     ]
 
     # Packages come from hb_packages.resolve_package_set — the same rule the
@@ -102,7 +99,7 @@ def main() -> None:
 
     # Build complete data structure
     data = {
-        "arches": ["aarch64", "x86_64"],
+        "arches": rpm_arches(resolve_platforms(variables, properties)),
         "contentOrigin": {"repofiles": sorted(repofiles)},
         "context": {"bare": True},
         "installWeakDeps": False,
@@ -118,4 +115,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

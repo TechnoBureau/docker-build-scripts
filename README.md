@@ -75,25 +75,29 @@ docker-build-scripts/
 
 ### Prerequisites
 
-- Bash 4.0+
+- Bash 4.4+ (associative arrays and modern array handling)
 - Docker or Podman
 - For multi-arch builds: QEMU (`docker run --privileged --rm tonistiigi/binfmt --install all`)
 - For operator tools: `opm`, `kubectl`, `yq`, `jq`
 
 ### Basic Usage
 
-```bash
-# Simple build with Dockerfile comments
-./build/universal-ci.sh -d /path/to/Dockerfile -i myimage
+The universal engine is a **source-and-call library**:
 
-# Multi-registry deployment
-./build/universal-ci.sh -c build.yaml -d ./Dockerfile -v 1.0.0
+```bash
+source ./build/universal-ci.sh
+
+# Simple Dockerfile build
+main_build -d /path/to/Dockerfile -i myimage
+
+# Version and registry settings (subject to configuration precedence)
+VERSION=1.0.0 REGISTRY=quay.io/acme main_build -d ./Dockerfile -i myapp
 
 # Multi-architecture build
-./build/universal-ci.sh -d ./Dockerfile -i myapp --platforms linux/amd64,linux/arm64
+PLATFORMS=linux/amd64,linux/arm64 main_build -d ./Dockerfile -i myapp
 
-# Test without pushing
-./build/universal-ci.sh -d ./Dockerfile --skip-push
+# Build without publishing image tags
+SKIP_PUSH=true main_build -d ./Dockerfile -i myapp
 ```
 
 ---
@@ -205,8 +209,8 @@ Complete lifecycle: Rebundle → Catalog → Promotion
 
 ## Hummingbird Builder
 
-The **hummingbird** flavour builds reproducible, compliance-scanned RPM images
-from a *declarative* definition instead of a hand-written Dockerfile. One builder
+The **hummingbird** flavour builds RPM images for Hummingbird, UBI 9 and UBI 10
+from a declarative definition, with FIPS-enabled defaults and optional OSCAP scans. One builder
 directory fans out into a matrix of distro × variant images:
 
 ```
@@ -221,23 +225,63 @@ builders/curl/                        .hbgen/images/curl/
 ### Usage
 
 ```bash
-# Detected automatically (properties.yml + Containerfile.j2 in the builder dir)
-./build/universal-ci.sh -i curl
+source ./build/universal-ci.sh
+# Auto-detected from properties.yml + Containerfile.j2 under BUILDERS_DIR/SOURCE_DIR
+main_build -i curl
 
-# Restrict the matrix
-HB_DISTROS="hummingbird" HB_VARIANTS="default,builder" ./build/universal-ci.sh -i curl
+# Single or multi-arch on either distro; default already includes FIPS
+HB_DISTROS=ubi9 HB_VARIANTS=default PLATFORMS=linux/arm64 main_build -i curl
+HB_DISTROS=hummingbird HB_VARIANTS=default \
+    PLATFORMS=linux/amd64,linux/arm64 main_build -i curl
 
-# Skip the package-version stage (no container engine / no repo access)
-HB_SKIP_RPM_VERSIONS=true HB_VERSION=8.21.0 ./build/universal-ci.sh -i curl
+# Skip repository version queries (the actual image build still needs an engine)
+HB_SKIP_RPM_VERSIONS=true HB_VERSION=8.21.0 SKIP_PUSH=true main_build -i curl
 ```
+
+### FIPS, platforms and base images
+
+`default` and `builder` are FIPS-enabled without needing an `oscap` section or a
+separate `-fips` variant. The resolver adds crypto-policy/OpenSSL/FIPS-provider
+packages for each distro; Hummingbird also receives `openssl-config-fips`.
+Contradictory policy settings and missing providers fail rather than silently
+producing an image labelled FIPS.
+
+Newroot **always starts empty**. An optional `base_image` supplies filesystem
+content; inherited packages are upgraded before the requested packages are installed:
+
+```yaml
+# properties.yml additions
+platforms: [linux/amd64, linux/arm64]  # one entry for single-arch; omit for native
+base_image:
+  ubi9: registry.access.redhat.com/ubi9/ubi-minimal:latest
+  ubi10: registry.access.redhat.com/ubi10/ubi-minimal:latest
+  # Hummingbird is unseeded in this example.
+rpm_packages:
+  all: [curl, ca-certificates]
+```
+
+Use a distro-compatible base with the selected architectures; pin approved
+references for releases. Base `ENV`, `USER` and `ENTRYPOINT` metadata is not inherited
+by a filesystem copy. Build dependencies stay in the tooling stage.
+
+Default final assembly is portable `FROM scratch` + `COPY --from=builder`.
+`chunkah: true` remains an explicit Podman-only option, serialized and uncached
+so archive side effects cannot cross architectures. Docker multi-arch uses buildx
+indexes; Podman joins per-platform image IDs into one manifest. With no push,
+Docker saves an OCI archive (`BUILD_OUTPUT_DIR`, default `.ci-output/`) and Podman
+keeps a local manifest.
+
+**FIPS packages/policy are not a certification claim.** Validate module versions,
+application crypto use, and FIPS host/runtime configuration before deployment.
+Full settings and package lists: [Hummingbird pipeline](context/hummingbird-pipeline.md).
 
 ### Pipeline
 
 ```
-1 prepare    hbgen.py            → .hbgen/ work tree (vendored generators run unchanged)
+1 prepare    hbgen.py            → .hbgen/ work tree (vendored generator layout)
 2 aggregate  aggregate_properties.py → variants, distros, per-variant distro restrictions
 3 rpms       hbgen.py            → <distro>/<variant>/rpms/rpms.in.yaml
-4 versions   get_rpm_versions.sh → .cache/rpm-versions.yml (per distro; needs an engine)
+4 versions   get_rpm_versions.sh → .cache/rpm-versions.yml (per distro/architecture; needs an engine)
 5 render     hbgen.py            → Containerfile, VERSION, TAGS, oscap-tailoring.xml
 6 build      ci_build_and_push   → one image per matrix row (shared engine)
 ```
@@ -259,7 +303,10 @@ python3 build/lib/hummingbird/hbgen.py config  --hbgen <builder>/.hbgen --image 
 | `hummingbird/hbgen.py` | Pipeline CLI: `prepare`, `rpms`, `matrix`, `render`, `config`, `vars`, `distros`, `variants` |
 | `hummingbird/hb_variant.py` | Variant decomposition (`fips-builder` → base/modifiers) and image naming |
 | `hummingbird/hb_config.py` | YAML loading, deep merge, required-key validation, actionable errors |
-| `hummingbird/hb_packages.py` | Package-set resolution — one rule for `rpms.in.yaml` **and** `ARG MAIN_PACKAGES` |
+| `hummingbird/hb_packages.py` | Runtime/build package sets — one rule for RPM inputs and install commands |
+| `hummingbird/hb_rootfs.py`, `rootfs.sh` | FIPS/base-image policy and image-side rootfs lifecycle |
+| `hummingbird/hb_platforms.py`, `hb_versions.py` | Target architecture selection, version-query plan/cache validation |
+| `build/lib/ci-platforms.sh` | Docker/Podman builds, manifest assembly, no-push output |
 | `hummingbird/generate_jinja2.py` | Template context, labels, tags, rendering |
 | `hummingbird/macros/`, `templates/` | Jinja building blocks for the generated Containerfile |
 
@@ -281,7 +328,7 @@ container-engine calls in Python.
 ### Tests
 
 ```bash
-HB_PYTHON=python3 ./tests/hummingbird/run-tests.sh      # 99 assertions, offline, ~6s
+HB_PYTHON=python3 ./tests/run-tests.sh      # all offline regression/contract suites
 ```
 
 No container engine, network, builder image or package repository required —
@@ -291,7 +338,6 @@ No container engine, network, builder image or package repository required —
 ### Documentation
 
 - [context/hummingbird-pipeline.md](context/hummingbird-pipeline.md) — concepts, stages, configuration keys, macros, invariants
-- [context/flaw-report-hummingbird.md](context/flaw-report-hummingbird.md) — the audit: 30 findings with evidence, fixes and regression ids
 - [context/extension-guide.md](context/extension-guide.md) — add a distro, variant, package group, macro or knob
 - [context/troubleshooting.md](context/troubleshooting.md) — message → cause → fix
 
@@ -309,7 +355,6 @@ This repository is written to be operated by AI agents as well as humans.
 | [`context/conventions.md`](context/conventions.md) | Bash / Python / Jinja style, `WHY:` comments, determinism rules |
 | [`context/extension-guide.md`](context/extension-guide.md) | Step-by-step recipes for the ten most common extensions |
 | [`context/troubleshooting.md`](context/troubleshooting.md) | Real messages, causes and fixes |
-| [`context/flaw-report-hummingbird.md`](context/flaw-report-hummingbird.md) | Audit findings with reproduced evidence |
 | [`tests/README.md`](tests/README.md) | How the offline suite works and how to extend it |
 | [`CLAUDE.md`](CLAUDE.md) | Repository guide for Claude Code |
 
@@ -522,7 +567,8 @@ export DIND_IMAGE=""         # override the binfmt/runtime helper image
 export SOURCE_DATE_EPOCH=0   # reproducible image timestamps
 ```
 
-`INSTALL_BINFMT` controls QEMU emulator installation for multi-platform builds:
+`INSTALL_BINFMT` controls QEMU installation for non-native targets, including a
+single foreign architecture, on Docker and Podman:
 
 | Value | Behaviour |
 | --- | --- |
@@ -576,7 +622,8 @@ REGISTRY:
 export DEBUG=true
 
 # Test builds without pushing
-./build/universal-ci.sh -d ./Dockerfile --skip-push
+source ./build/universal-ci.sh
+SKIP_PUSH=true main_build -d ./Dockerfile -i myapp
 
 # Test operator rebundle without pushing
 ./build/operator-rebundle.sh -c config.yaml -i images.lst --skip-push --skip-bundle
@@ -623,8 +670,8 @@ Enable detailed logging for troubleshooting:
 
 ```bash
 export DEBUG=true
-export DEBUG=true
-./build/universal-ci.sh -d ./Dockerfile -i myapp
+source ./build/universal-ci.sh
+main_build -d ./Dockerfile -i myapp
 ```
 
 This will output detailed information about:
@@ -705,7 +752,6 @@ When adding new features:
 - Universal CI usage: see [Build Scripts](#build-scripts) and the header comments in `build/universal-ci.sh`
 - [Agent Operating Manual](AGENTS.md) — hooks, invariants, behaviour-ownership map
 - [Context Knowledge Base](context/README.md) — architecture, hummingbird pipeline, conventions, extension guide, troubleshooting
-- [Hummingbird Flaw Report](context/flaw-report-hummingbird.md) — audit findings with evidence and fixes
 - [Test Suite](tests/README.md) — offline regression tests
 
 ---

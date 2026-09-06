@@ -1,134 +1,109 @@
 # Troubleshooting
 
-Match the message you see to a row. Everything here was produced by real runs in
-this repository.
+## 1. Reproduce the generator pipeline without an engine
 
-## 1. First moves (always)
-
-```bash
-DEBUG=true ./build/universal-ci.sh -i <image>        # verbose logging + keeps temp files
-ls -la <builder>/.hbgen                              # did generation happen at all?
-ls -R  <builder>/.hbgen/images/<image>               # which rows exist?
-cat    <builder>/.hbgen/images/<image>/<distro>/<variant>/Containerfile   # the truth
-cat    <builder>/.hbgen/images/<image>/<distro>/<variant>/VERSION
-cat    <builder>/.hbgen/images/<image>/<distro>/<variant>/TAGS
-cat    <builder>/.hbgen/.cache/properties.json       # aggregated variants + distros
-cat    <builder>/.hbgen/.cache/rpm-versions.yml      # resolved versions per distro
-```
-
-Then re-run the failing stage in isolation — every stage is a standalone command:
+From the repository root, with `HB_PYTHON` pointing to a Python containing
+PyYAML/Jinja2 (use an absolute venv path):
 
 ```bash
-cd <builder>
-HB=<repo>/build/lib/hummingbird          # adjust to where this repo is mounted
+REPO="$PWD"
+HB="$REPO/build/lib/hummingbird"
+PY="${HB_PYTHON:-python3}"
+WORK="$(mktemp -d)"
+cp -R "$REPO/tests/hummingbird/fixtures/no-oscap/builders" "$WORK/builders"
+BUILDER="$WORK/builders/hello"
+TREE="$BUILDER/.hbgen"
 
-python3 $HB/hbgen.py prepare --image-dir . --builders-dir .. --distros ubi9
+"$PY" "$HB/hbgen.py" prepare --image-dir "$BUILDER" --builders-dir "$WORK/builders"
+( cd "$TREE" && "$PY" "$HB/aggregate_properties.py" )
+"$PY" "$HB/hbgen.py" matrix --hbgen "$TREE" --image hello
+"$PY" "$HB/hbgen.py" rpms --hbgen "$TREE" --image hello
 
-# Stage 2 is a vendored generator and must run with cwd = the work tree.
-# Skipping it is the most common mistake here: `matrix` then fails with
-# ".cache/properties.json not found".
-( cd .hbgen && python3 $HB/aggregate_properties.py )
+# With an engine/network, resolve real versions here:
+# ( cd "$TREE" && HB_PYTHON="$PY" CONTAINER_ENGINE=podman ci/get_rpm_versions.sh )
 
-python3 $HB/hbgen.py matrix  --hbgen .hbgen --image <name>
-python3 $HB/hbgen.py rpms    --hbgen .hbgen --image <name>    # required before render
-python3 $HB/hbgen.py render  --hbgen .hbgen --image <name> --distros ubi9
-python3 $HB/hbgen.py config  --hbgen .hbgen --image <name> --distro ubi9 --variant default
+"$PY" "$HB/hbgen.py" render --hbgen "$TREE" --image hello
+"$PY" "$HB/hbgen.py" config --hbgen "$TREE" --image hello --distro hummingbird --variant default
+cat "$TREE/images/hello/hummingbird/default/Containerfile"
+# WORK is a temporary copy; remove it when finished inspecting it.
 ```
 
-The stages are cumulative, and each one names its missing prerequisite:
+Omitting the versions stage makes package-derived tags unresolved. Render still
+works; config drops `unknown`/`unknown-*` tags and warns, falling back to usable
+tags such as `latest`. It does not prove that packages exist in real repositories.
 
-| Command | Requires | Error if you skip ahead |
-| --- | --- | --- |
-| `matrix` | `prepare` + `aggregate_properties.py` | `.cache/properties.json not found — run aggregate_properties.py … first` |
-| `render` | the above + `rpms` | `…/rpms/rpms.in.yaml is missing — run 'hbgen.py rpms' …` |
-| `config` | the above + `render` | `no rendered Containerfile for … — run 'hbgen.py render' first` |
+| Command | Prerequisites |
+| --- | --- |
+| `matrix` | prepare + aggregate |
+| `rpms` | prepare + aggregate |
+| `render` | the above + rpms; versions required for real version tags |
+| `config` | the row's rendered Containerfile |
 
-`render` also wants `.cache/rpm-versions.yml` (stage 4, needs a container
-engine). Without it the render still succeeds, but every version reads
-`unknown`; `config` then drops those tags and falls back to `latest` with a
-warning — see [finding 30](flaw-report-hummingbird.md).
-
-`hbgen.py config` prints the exact key/value pairs the driver loads into
-`CONFIG` — the fastest way to see what the engine was actually told.
-
-## 2. Generation errors
-
-| Message | Cause | Fix |
-| --- | --- | --- |
-| `error: <dir> is not a hummingbird builder: missing Containerfile.j2` | Wrong directory, or the builder is incomplete | `ci_hummingbird_find_image` searches `BUILDERS_DIR/<name>` then `SOURCE_DIR`; check both |
-| `error: variables.yml not found (looked in <builder>/variables.yml and <builders>/variables.yml)` | Neither file exists | Create one; at least one is required |
-| `error: variables.yml (shared defaults) is empty: <path>` | File exists but parses to `null` | Add `default_distros:` / `default_variants:` |
-| `error: images/variables.yml is missing required key(s): default_variants` | Merged variables lack a key | All missing keys are listed at once |
-| `error: properties.yml of image 'x' is missing required key(s): stream` | Incomplete `properties.yml` | Required: `description`, `summary`, `url`, `stream`, `tags` |
-| `error: unknown image 'x'; known images: a, b` | Name/typo mismatch | The message lists what exists |
-| `error: HB_VARIANTS='x' does not match any variant of image 'y' (available: …)` | Override names a variant that was not declared | Declare it in `variants:`/`additional_variants:` or fix the override |
-| `warning: skipping ubi9/fips: restricted to hummingbird by additional_variants` | Working as intended | The variant declared `distros:`; remove the restriction if you want it |
-| `jinja2.exceptions.UndefinedError: 'x' is undefined` | A macro read a variable `ImageContext` does not provide | Add it in `_build_variables`; do **not** add `\| default(...)` (see `conventions.md` §4) |
-| `KeyError` / traceback from a generator | Unexpected input shape, or a re-vendored file dropped a local fix | Check `hummingbird-pipeline.md` §7; tracebacks are treated as bugs |
-
-## 3. Versions and tags
-
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| `VERSION` is `unknown` | Stage 4 was skipped or could not resolve the version package | `HB_SKIP_RPM_VERSIONS=true` intentionally skips it; otherwise check the repoquery output below. Driver falls back to tag `latest` **and warns** |
-| Tag is `latest` but you expected a version | Same as above | Run stage 4 with an engine, or set `HB_VERSION=…` |
-| ubi9 image tagged with the hummingbird version | Stale **flat** `.cache/rpm-versions.yml` from before the per-distro format | Delete `.cache/rpm-versions.yml` and re-run stage 4 (flat caches are still read for compatibility, but they cannot distinguish distros) |
-| `error: rpm versions cache has no entry for distro 'ubi9' (known: hummingbird)` | Stage 4 ran for a different distro set | Re-run with the same `--distros`, or clear the TTL cache |
-| Versions resolve to an unexpected build (e.g. `8.21.0-0.dev1`) | `version_package` / `main_package` mismatch, or the repo has a newer build | `rpm_versions` keys come from `properties.yml`'s `version_package`; the driver warns when `main_package` has no resolved version |
-| Version not refreshed after a repo update | Cache TTL reuse | `HB_RPM_VERSIONS_TTL=0` forces a re-resolve |
-| `epoch` prefix in a tag (`3:8.10.1`) | Old cache format | Fixed: epochs are stripped when the cache is written; regenerate it |
-
-Debug stage 4 by hand (needs an engine and repo access):
+For the actual build, **source and call** the library:
 
 ```bash
-podman run --rm -v "$PWD/.hbgen:/run/src:z" -w /run/src \
-  <builder-image> bash -lc \
-  'dnf repoquery --repofrompath "tmp,https://…" --repoid=tmp --qf "%{name} %{evr}" curl'
+source ./build/universal-ci.sh
+DEBUG=true main_build -i curl
 ```
 
-## 4. Build-time failures
+## 2. Configuration and generation
 
-| Message | Cause | Fix |
-| --- | --- | --- |
-| `Error: creating build context: … out.ociarchive: file not found` | The chunkah archive was deleted between matrix rows | Do not widen the cleanup glob in `ci-build.sh` (see the `WHY` there); the driver cleans once, after the last row |
-| `error: required function 'ci_build_and_push' is not loaded` | The engine libraries were not sourced | Source `build/universal-ci.sh` (it pulls in `ci-core`/`ci-build`/…), not `ci-hummingbird.sh` alone |
-| `error: required function 'build_registries_array' is not loaded` | Same | Same |
-| `error: image directory is required` followed by a dead CI job | Legacy `${1:?}` in a sourced function | Fixed: the driver returns 1 with a message. If you see a job die silently, you are on an older revision |
-| Only some matrix rows were built | A loop reading its row list from stdin | Fixed (`mapfile` + `for`). If it recurs, check any new command in the row loop that reads stdin |
-| Images pushed to a registry from a previous row | Stale `DF_REGISTRY_*` keys | Fixed (`ci_hummingbird_reset_config`); any new `CONFIG` key you fill must be reset there too |
-| Build works on amd64, fails on arm64 | No QEMU/binfmt in the runner | `ci_setup_buildx` installs binfmt; in a sandbox use `--platform linux/amd64` and skip arm64 |
-| Context is huge / build is slow to start | Unexpected files in `.hbgen/images/<image>` | Only repo files + the selected SCAP datastreams belong there; check `du -sh .hbgen/images/<image>` and the distro selection |
-| `COPY yum-repos/<distro>.repo` not found | Repo file missing for that distro | Add `yum-repos/<distro>.repo` and `default_variant_repos.<distro>` |
+| Message/symptom | Action |
+| --- | --- |
+| `no variables.yml` | Provide shared `builders/variables.yml` or a per-image file |
+| `variables.yml ... is empty` | Supply a mapping, including `default_distros` |
+| `missing required key(s)` | Add the listed image properties; `default_variants` is optional |
+| `unknown variant(s)` | Select a declared variant; inspect the aggregate with `hbgen.py variants` |
+| `skipping ubi9/debug: restricted ...` | The explicit `additional_variants[].distros` filter excluded the row |
+| UBI FIPS row skipped | Remove an obsolete Hummingbird-only restriction in your definition; the FIPS package baseline supports UBI |
+| `unsupported architecture/platform` | Hummingbird/UBI supports `linux/amd64` and `linux/arm64`; use canonical values or RPM aliases |
+| `fips=... contradicts crypto_policy=...` | Keep policy and FIPS flag consistent; use an explicit opt-out only for a non-FIPS variant |
+| `no FIPS package policy for distro` | Extend the distro policy table and test it; do not guess package names in Jinja |
+| `base_image must be an image reference` | Use a literal reference/scoped mapping, not shell or Jinja interpolation |
+| `no repository files configured` / `repo file not found` | Provide the repo definition in vendored `yum-repos/`; built-in UBI/Hummingbird defaults need no repeated mapping |
+| Python dependency errors | Use `HB_PYTHON` with PyYAML/Jinja2 installed in a virtualenv; see `tests/README.md` |
 
-## 5. Environment problems
+## 3. Versions and platforms
 
-| Symptom | Cause | Fix |
-| --- | --- | --- |
-| `ModuleNotFoundError: No module named 'yaml'` / `'jinja2'` | System python lacks the deps | `python3 -m venv /tmp/hbvenv && /tmp/hbvenv/bin/pip install pyyaml jinja2`, then `HB_PYTHON=/tmp/hbvenv/bin/python` |
-| Stage 3 fails although stages 1–2 worked | `get_rpm_versions.sh` used a different interpreter than the rest | Set `HB_PYTHON` — it is honoured by every stage including stage 3 |
-| `pip install …` refuses with `externally-managed-environment` (PEP 668) | Distro-managed python | Use a venv; do not pass `--break-system-packages` |
-| Test suite fails with `unknown` versions everywhere | `HB_PYTHON` not set when running the suite | `HB_PYTHON=/tmp/hbvenv/bin/python ./tests/hummingbird/run-tests.sh` |
-| `podman: command not found` | No container engine | Generation and rendering still work; builds and stage 4 do not. The test suite stubs the engine |
-| `git submodule status` returns nothing | Not a submodule-configured work tree | Expected; `gitmodules` becomes `{}` and `git_submodule_hash()` returns `unknown` |
+| Message/symptom | Action |
+| --- | --- |
+| `No version resolved for: ubi9/<package> (architecture aarch64)` | Check the package in that distro/arch repo, not the host's repo; missing FIPS providers are fatal |
+| `differs across requested architectures` | Align repository versions or build architectures separately; one manifest tag must not silently describe different versions |
+| Cache not reused despite fresh mtime | Check the request fingerprint: packages, repos, builder reference or architectures changed |
+| `RPM versions cache lacks ... architectures` | Regenerate RPM inputs and run the versions stage for the new selection |
+| Single arm64 build reports `exec format error` | Use an arm64 worker or working QEMU/binfmt; a single foreign target needs emulation too |
+| `INSTALL_BINFMT=false` reports missing emulator | Supply emulation outside the build or use a native worker; `false` deliberately performs no privileged install |
+| Docker multi-arch requires buildx | Install/configure buildx. The engine uses a docker-container builder or `BUILDX_BUILDER` |
 
-## 6. Reading the logs
+## 4. Rootfs and base images
 
-```
-[hbgen] note:      stage progress (stdout, part of the command output)
-[hbgen] info:      diagnostic detail (stderr)
-[hbgen] warning:   recoverable problem, generation continues
-[hbgen] error:     fatal, nothing usable was produced
-[hbgen] debug:     only with DEBUG=true
-```
+- `hb-rootfs reset` removes the entire validated newroot, including dotfiles and
+  stale RPM databases. It refuses protected paths, symlinked paths and `..`.
+- `base image ID=... does not match requested distro` means a seed and repository
+  release disagree. Use a compatible seed or select the matching distro.
+- `FIPS provider missing` or `FIPS definitions missing` is not a cosmetic warning:
+  fix the package/repository inputs. The helper will not write a successful FIPS
+  state for a rootfs lacking its provider/definitions.
+- Composite policies such as `FIPS:OSPP` need pre-generated definitions in the
+  rootfs. The helper does not execute foreign policy-generation binaries.
+- `rootfs/` in the build context is **not** an implicit base. Copy custom files
+  deliberately in `Containerfile.j2` after `setup_newroot()`.
+- Seeding copies filesystem content, not base-image `ENV`, `USER`, `ENTRYPOINT`
+  or other image metadata. Define those in the final template.
 
-The driver prefixes its own lines with `ci-hummingbird:` / `hummingbird:`.
-`hbgen` logs go to **stderr** so that `hbgen.py config`'s TSV output on stdout
-can be consumed directly — never redirect stderr into the captured output.
+## 5. Image output
 
-## 7. Still stuck?
+- Default assembly is `FROM scratch` + a normal `COPY --from=builder`. No shared
+  OCI archive is needed, and the stage dependency works for each target.
+- `chunkah: true` requires Podman. Keep it serialized and uncached: its bind-mount
+  output cannot safely be replayed from layer cache. Do not restore the old
+  assumption that merely retaining `out.ociarchive` makes cache hits safe.
+- With `SKIP_PUSH=true`, Docker multi-arch output is an OCI archive in
+  `BUILD_OUTPUT_DIR` (default `<context>/.ci-output/`); Podman returns/logs a local
+  manifest. No image tags should be published.
+- A failed platform build or manifest push must fail the pipeline. Never turn a
+  push error into a warning followed by a success record.
 
-1. Reduce to one row: `HB_DISTROS=hummingbird HB_VARIANTS=default`.
-2. Skip the engine-dependent stage: `HB_SKIP_RPM_VERSIONS=true HB_VERSION=1.2.3`.
-3. Inspect the rendered Containerfile — 90% of "the build is wrong" is visible
-   there before any container runs.
-4. Add the case to `tests/hummingbird/fixtures/` so it stays fixed.
+Run `HB_PYTHON=... ./tests/run-tests.sh` after changing any of these paths.
+Real image builds, crypto-provider operation and compliance scans still need a
+suitable container runner; the offline suite does not emulate those guarantees.

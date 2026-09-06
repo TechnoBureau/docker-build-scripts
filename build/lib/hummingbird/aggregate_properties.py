@@ -38,7 +38,7 @@ import yaml
 from hb_config import ConfigError, as_list, load_yaml, require_keys
 
 #: Keys variables.yml must define for the variant/distro matrix to resolve.
-REQUIRED_VARIABLES = ("default_distros", "default_variants")
+REQUIRED_VARIABLES = ("default_distros",)
 
 
 def _parse_additional_variants(additional_variants: list) -> tuple[list, dict]:
@@ -72,10 +72,12 @@ def _compute_variants(image_props: dict, default_variants: list) -> tuple[list, 
     Returns:
         Tuple of (variants, variant_distros_map)
     """
-    base = image_props.get("variants", default_variants)
-    additional = image_props.get("additional_variants", [])
+    base = as_list(image_props.get("variants", default_variants))
+    if not base:
+        raise ConfigError("variants must not be empty; omit it for the FIPS-enabled default variant")
+    additional = as_list(image_props.get("additional_variants", []))
     additional_names, variant_distros = _parse_additional_variants(additional)
-    return base + additional_names, variant_distros
+    return list(dict.fromkeys(base + additional_names)), variant_distros
 
 
 def _compute_distros(image_props: dict, default_distros: list) -> list:
@@ -144,7 +146,7 @@ def _load_image_properties(
             # distro restrictions (additional_variants: [{name, distros}]) that
             # produced distro_variants above. Without it the driver builds the
             # full distro x variant product and attempts combinations this file
-            # explicitly forbids, e.g. ubi9/fips.
+            # explicitly forbids, e.g. a distro-specific debug variant.
             "variant_distros": variant_distros,
             "repository": properties_file.parent.name,
         }
@@ -161,7 +163,9 @@ def main() -> None:
     variables = load_yaml(variables_file, "images/variables.yml")
     require_keys(variables, REQUIRED_VARIABLES, str(variables_file))
     default_distros = as_list(variables["default_distros"])
-    default_variants = as_list(variables["default_variants"])
+    # The named default variant is FIPS-enabled by hb_rootfs; an image need
+    # not repeat a variants list to receive the secure baseline.
+    default_variants = as_list(variables.get("default_variants", ["default"]))
 
     properties_files = sorted(
         (base_dir / "images").glob("*/properties.yml"),
