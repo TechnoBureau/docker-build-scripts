@@ -35,8 +35,13 @@ python3 $HB/hbgen.py prepare --image-dir <builder> --builders-dir <builders> --d
 python3 $HB/hbgen.py matrix  --hbgen <builder>/.hbgen --image <name> --distros ubi11
 ```
 
-**Test:** add the distro to a fixture builder and assert the repo `COPY`, the
-`--disablerepo` flag and the datastream selection (pattern: D13–D15, A8).
+**Test:** add the distro to a fixture builder and assert the repo `COPY` and the
+datastream selection (pattern: D13–D15, A8). The
+`--disablerepo=public-hummingbird*` flag is emitted only when one of the
+distro's selected repo files defines a `public-hummingbird*` section
+(`repo_files_define_hummingbird_repos` in `hb_config.py`) — dnf5 exits on a
+repo pattern that matches no configured repository, so a plain UBI repo file
+must render without the flag (pattern: D13, G4–G8).
 
 ---
 

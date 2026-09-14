@@ -24,8 +24,9 @@ differences.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import yaml
 
@@ -204,3 +205,27 @@ def resolve_repos(variables: dict, properties: dict, distro: str) -> list[str]:
         if not isinstance(repo, str) or Path(repo).name != repo or not repo.endswith(".repo"):
             raise ConfigError(f"invalid repository filename {repo!r}: use a .repo file in yum-repos/")
     return list(dict.fromkeys(repos))
+
+
+#: Section headers of the repositories owned by the Hummingbird repo files.
+#: The repoquery stage (get_rpm_versions.sh) and the rendered DNF_FLAGS may
+#: pass ``--disablerepo=public-hummingbird*`` only when this pattern can
+#: actually match one of the selected repo files: dnf5 treats a non-matching
+#: repository pattern as a fatal error ("No matching repositories for ..."),
+#: which broke every UBI build whose repo selection omits hummingbird.repo.
+HUMMINGBIRD_REPO_SECTION = re.compile(r"^\s*\[public-hummingbird", re.MULTILINE)
+
+
+def repo_files_define_hummingbird_repos(repo_dir: str | Path, repos: Sequence[str]) -> bool:
+    """True when any selected .repo file defines a public-hummingbird* section.
+
+    Args:
+        repo_dir: Directory holding the .repo files (the work tree's
+            ``yum-repos/`` or the vendored copy).
+        repos: Repo file basenames selected for the distro (see resolve_repos).
+    """
+    for repo in repos:
+        path = Path(repo_dir) / repo
+        if path.is_file() and HUMMINGBIRD_REPO_SECTION.search(path.read_text(encoding="utf-8")):
+            return True
+    return False

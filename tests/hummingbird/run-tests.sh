@@ -11,7 +11,7 @@
 # Usage:
 #   ./tests/hummingbird/run-tests.sh            # run everything
 #   ./tests/hummingbird/run-tests.sh -k matrix  # run one GROUP by keyword:
-#                                               #   prepare|matrix|versions|render|errors|driver
+#                                               #   prepare|matrix|versions|render|errors|driver|disablerepo
 #   ./tests/hummingbird/run-tests.sh -t fips    # report only assertions whose NAME
 #                                               #   matches (all groups still execute)
 #   HB_TEST_KEEP=1 ./tests/hummingbird/run-tests.sh   # keep the work dir
@@ -346,6 +346,15 @@ PY
     output="$(cd "${CURL_TREE}" && HB_RPM_VERSIONS_TTL=600 CONTAINER_ENGINE=/nonexistent \
         ci/get_rpm_versions.sh 2>&1)"
     assert_contains "C11 HB_RPM_VERSIONS_TTL reuses a fresh cache" "${output}" "Reusing"
+
+    # Flaw: the ubi9 query mounted only ubi9.repo but still passed
+    # --disablerepo=public-hummingbird*. dnf5 exits on a repo pattern that
+    # matches no configured repository ("No matching repositories for ..."),
+    # so every UBI build died in the versions stage. The pattern may only be
+    # passed when a mounted repo file actually defines such a section (group G).
+    ubi9_call="$(grep 'ubi9.repo' "${stub_log}" | head -1)"
+    assert_not_contains "C12 ubi9 repoquery omits the non-matching disablerepo pattern" \
+        "${ubi9_call}" "--disablerepo=public-hummingbird*"
 fi
 
 # --------------------------------------------------------------------------- #
@@ -386,7 +395,13 @@ if matches_filter "render"; then
         'io.hummingbird-project.variant.builder="true"'
 
     assert_contains "D12 FIPS crypto policy applied for the fips variant" "${fips_cf}" 'hb-rootfs policy "${NEWROOT}" "FIPS"'
-    assert_contains "D13 ubi9 build disables the hummingbird repositories" "${ubi9_cf}" "--disablerepo=public-hummingbird*"
+    # Flaw: DNF_FLAGS carried --disablerepo=public-hummingbird* for every
+    # non-hummingbird distro, but the ubi9 row copies only ubi9.repo into
+    # /etc/hb-repos. dnf5 treats a non-matching pattern as fatal, so the flag
+    # must appear only when a selected repo file defines such a section
+    # (covered by group G).
+    assert_not_contains "D13 ubi9 build omits the non-matching hummingbird disable flag" \
+        "${ubi9_cf}" "--disablerepo=public-hummingbird*"
     assert_contains "D14 ubi9 build copies its own repo file" "${ubi9_cf}" "COPY yum-repos/ubi9.repo"
     assert_contains "D15 ubi9 compliance uses the ubi9 datastream" "${ubi9_cf}" "/run/src/oscap/ssg-rhel9-ds.xml"
     assert_contains "D16 compliance tailoring is passed when rules are excluded" "${default_cf}" "--tailoring-file"
@@ -613,6 +628,77 @@ if matches_filter "driver"; then
     assert_eq "F31 resolved tags pass through, deduplicated, in order" \
         "8.21.0-fips 8.21-fips latest-fips" "${CONFIG[CUSTOM_TAGS]:-}"
     assert_eq "F32 resolved VERSION is untouched" "8.21.0" "${CONFIG[VERSION]:-}"
+fi
+
+# --------------------------------------------------------------------------- #
+# Group G — dnf5-safe --disablerepo selection
+#
+# dnf5 exits with "No matching repositories for <pattern>" when a
+# --enablerepo/--disablerepo pattern matches no configured repository (dnf4
+# only warned). The builder image runs dnf5, so the scripts may pass
+# --disablerepo=public-hummingbird* only when the selected repo files really
+# define such a section. The stub enforces the same rule, so a regression is
+# caught here and in groups C/D.
+# --------------------------------------------------------------------------- #
+if matches_filter "disablerepo"; then
+    group "G. dnf5-safe --disablerepo selection (public-hummingbird* only when matchable)"
+
+    # Turn the vendored yum-repos symlink into a WORK-local directory and add
+    # a repo file that defines a public-hummingbird* section. The checkout is
+    # never touched.
+    if [[ -L "${VENDORED}/yum-repos" ]]; then
+        rm "${VENDORED}/yum-repos"
+        mkdir -p "${VENDORED}/yum-repos"
+        cp -a "${HB_DIR}/yum-repos/." "${VENDORED}/yum-repos/"
+    fi
+    cat > "${VENDORED}/yum-repos/hummingbird-extra.repo" <<'REPO'
+[public-hummingbird-extra-rpms]
+name=public-hummingbird-extra-rpms
+baseurl=https://example.invalid/public-hummingbird-extra/
+enabled=1
+gpgcheck=0
+REPO
+
+    # A builder whose UBI row additionally selects the hummingbird repo file.
+    # The directory is kept named "curl" because the image name derives from
+    # the builder directory basename.
+    mkdir -p "${WORK}/scratch"
+    cp -R "${CURL}" "${WORK}/scratch/curl"
+    mixed="${WORK}/scratch/curl"
+    mixed_tree="${mixed}/.hbgen"
+    printf '\nadditional_repos:\n  - hummingbird-extra.repo\n' >> "${mixed}/properties.yml"
+
+    hbgen prepare --image-dir "${mixed}" --builders-dir "${BUILDERS}" >/dev/null 2>&1
+    ( cd "${mixed_tree}" && "${PYTHON}" "${VENDORED}/aggregate_properties.py" >/dev/null 2>&1 )
+    hbgen rpms --hbgen "${mixed_tree}" --image curl >/dev/null 2>&1
+    g_stub_log="${WORK}/mixed-engine-calls.log"
+    ( cd "${mixed_tree}" && HB_STUB_LOG="${g_stub_log}" CONTAINER_ENGINE=podman \
+        ci/get_rpm_versions.sh >/dev/null 2>&1 )
+    status=$?
+    assert_eq "G1 versions stage succeeds with a mixed repo selection" "0" "${status}"
+    hbgen render --hbgen "${mixed_tree}" --image curl >/dev/null 2>&1
+    status=$?
+    assert_eq "G2 render succeeds with a mixed repo selection" "0" "${status}"
+
+    mixed_ubi9_rpms="$(read_file "${mixed_tree}/images/curl/ubi9/default/rpms/rpms.in.yaml")"
+    assert_contains "G3 ubi9 row selects the extra hummingbird repo file" \
+        "${mixed_ubi9_rpms}" "hummingbird-extra.repo"
+
+    g_ubi9_call="$(grep 'ubi9.repo' "${g_stub_log}" | head -1)"
+    assert_contains "G4 ubi9 repoquery keeps the disable flag when the pattern can match" \
+        "${g_ubi9_call}" "--disablerepo=public-hummingbird*"
+    g_hum_call="$(grep 'hummingbird.repo' "${g_stub_log}" | head -1)"
+    assert_not_contains "G5 hummingbird repoquery never disables its own repos" \
+        "${g_hum_call}" "--disablerepo"
+
+    mixed_ubi9_cf="$(read_file "${mixed_tree}/images/curl/ubi9/default/Containerfile")"
+    assert_contains "G6 ubi9 Containerfile keeps the disable flag when the pattern can match" \
+        "${mixed_ubi9_cf}" "--disablerepo=public-hummingbird*"
+    assert_contains "G7 ubi9 Containerfile copies every selected repo file" \
+        "${mixed_ubi9_cf}" "COPY yum-repos/hummingbird-extra.repo"
+    mixed_hum_cf="$(read_file "${mixed_tree}/images/curl/hummingbird/default/Containerfile")"
+    assert_not_contains "G8 hummingbird Containerfile carries no disable flag" \
+        "${mixed_hum_cf}" "--disablerepo"
 fi
 
 # --------------------------------------------------------------------------- #

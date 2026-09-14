@@ -31,6 +31,7 @@ from hb_config import (
     as_bool,
     deep_merge,
     load_yaml,
+    repo_files_define_hummingbird_repos,
     require_keys,
     resolve_repos,
 )
@@ -236,6 +237,13 @@ class ImageContext:
         variables["chunkah_enabled"] = rootfs.chunkah
         variables["distro_repos"] = resolve_repos(self.properties["variables"], self.image_properties, self.distro)
         variables["releasever"] = DISTRO_RELEASEVERS.get(self.distro, "")
+        # dnf5 makes a --disablerepo pattern that matches no configured
+        # repository fatal, so the template may emit
+        # --disablerepo=public-hummingbird* only when this distro's selected
+        # repo files actually define such a section (e.g. via additional_repos).
+        variables["distro_repos_have_hummingbird"] = repo_files_define_hummingbird_repos(
+            self.base_dir / "yum-repos", variables["distro_repos"]
+        )
         variables["image_repo_name"] = resolve_image_name(self.image_name, self.variant)
 
         # Package name for version/tag lookup (e.g. ruby4.0 for ruby-4-0 on Hummingbird)
