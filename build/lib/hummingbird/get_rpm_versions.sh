@@ -28,12 +28,23 @@ fi
 ci_query_rpm_versions() {
     local distro="$1" arch="$2" releasever="$3" packages="$4" repo_distro repo_arch repo
     local -a mounts=() flags=("--forcearch=$arch" "--arch=$arch,noarch" "--setopt=reposdir=/etc/hb-repos") names=()
+    local has_hummingbird_repos=false
     read -r -a names <<< "$packages"
     while IFS=$'\t' read -r repo_distro repo_arch repo; do
         [[ "$repo_distro" == "$distro" && "$repo_arch" == "$arch" ]] || continue
         mounts+=(-v "$repo:/etc/hb-repos/${repo##*/}:ro")
+        # Section header test: this mounted repo defines a public-hummingbird* repo id.
+        if grep -Eq '^[[:space:]]*\[public-hummingbird' "$repo"; then
+            has_hummingbird_repos=true
+        fi
     done < "$WORK/repos.tsv"
-    if [[ "$distro" != "hummingbird" ]]; then
+    # WHY conditional: only this query's mounted repos are configured
+    # (--setopt=reposdir), so dnf5 must never see a --disablerepo pattern it
+    # cannot match: dnf5 exits "No matching repositories for public-hummingbird*"
+    # for a non-matching pattern (dnf4 only warned), which broke every UBI
+    # build whose repo selection did not include hummingbird.repo. The flag is
+    # still required when a hummingbird repo IS mounted (e.g. additional_repos).
+    if [[ "$has_hummingbird_repos" == true && "$distro" != "hummingbird" ]]; then
         flags+=("--disablerepo=public-hummingbird*")
     fi
     [[ "$releasever" == - ]] || flags+=("--releasever=$releasever")

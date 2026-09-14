@@ -2,9 +2,9 @@
 # Stub container engine (podman/docker) for offline tests.
 #
 # get_rpm_versions.sh runs:
-#   <engine> run --rm [-v repo:/etc/yum.repos.d/repo:ro]... <builder-image> \
+#   <engine> run --rm [-v repo:/etc/hb-repos/repo:ro]... <builder-image> \
 #       dnf repoquery --quiet --latest-limit=1 --queryformat '...' \
-#       [--disablerepo=public-hummingbird*] <package>...
+#       --setopt=reposdir=/etc/hb-repos [--disablerepo=public-hummingbird*] <package>...
 #
 # This stub answers that one call from fixtures/rpm-versions.tsv, so the whole
 # version-resolution stage can be tested without a container runtime, a builder
@@ -12,6 +12,12 @@
 #
 # The distro is inferred the same way the real script distinguishes them: from
 # the bind-mounted repo file names.
+#
+# dnf5 fidelity: a --enablerepo/--disablerepo pattern that matches no
+# configured repository is FATAL ("No matching repositories for ..."), unlike
+# dnf4 which only warned. The configured set is exactly what --setopt=reposdir
+# selects, i.e. the bind-mounted repo files, so the stub enforces the same rule.
+# This keeps the offline suite honest about dnf5-specific argument regressions.
 
 set -euo pipefail
 
@@ -24,6 +30,50 @@ case "$*" in
     *"dnf repoquery"*) ;;
     *) exit 0 ;;
 esac
+
+# --- dnf5 strictness: every repo pattern must match a mounted repo section.
+args=("$@")
+mounted=()
+for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ "${args[i]}" == "-v" ]]; then
+        mounted+=("${args[i + 1]}")
+    fi
+done
+repo_section_ids() {
+    local m spec src
+    for m in ${mounted[@]+"${mounted[@]}"}; do
+        spec="${m#-v}"
+        spec="${spec%%:ro}"
+        # Bind-mount spec is SRC:DST[;OPTS]; the mount source holds the sections.
+        src="${spec%%:*}"
+        [[ -f "$src" ]] || continue
+        grep -E '^[[:space:]]*\[' "$src" | sed -e 's/^[[:space:]]*\['// -e 's/\].*$//'
+    done
+}
+for arg in "$@"; do
+    case "${arg}" in
+        --enablerepo=*|--disablerepo=*)
+            value="${arg#*=}"
+            # dnf5 splits list options on commas and whitespace.
+            read -r -a patterns <<< "${value//,/ }"
+            for pattern in "${patterns[@]}"; do
+                [[ -n "$pattern" ]] || continue
+                matched=0
+                while IFS= read -r section; do
+                    if [[ -n "$section" && "$section" == $pattern ]]; then
+                        matched=1
+                        break
+                    fi
+                done < <(repo_section_ids)
+                if ((matched == 0)); then
+                    echo "Error: No matching repositories for ${pattern}." >&2
+                    echo 'Add "--help" for more information about the arguments.' >&2
+                    exit 1
+                fi
+            done
+            ;;
+    esac
+done
 
 distro="hummingbird"
 arch="x86_64"

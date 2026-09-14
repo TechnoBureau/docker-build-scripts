@@ -16,7 +16,12 @@ ARG DNF_FLAGS="-y \
       --nodocs \
       --setopt=install_weak_deps=False \
       --setopt=reposdir=/etc/hb-repos \
-{%- if distro != "hummingbird" %}
+{#- WHY conditional (not just distro): only the selected repo files are copied
+   into /etc/hb-repos, and dnf5 exits on a --disablerepo pattern that matches
+   no configured repository ("No matching repositories for ...").
+   distro_repos_have_hummingbird is true only when one of the selected files
+   defines a public-hummingbird* section. -#}
+{%- if distro != "hummingbird" and distro_repos_have_hummingbird %}
       --disablerepo=public-hummingbird* \
 {%- endif %}
 {%- if releasever %}

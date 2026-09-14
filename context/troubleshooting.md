@@ -68,6 +68,7 @@ DEBUG=true main_build -i curl
 | Message/symptom | Action |
 | --- | --- |
 | `No version resolved for: ubi9/<package> (architecture aarch64)` | Check the package in that distro/arch repo, not the host's repo; missing FIPS providers are fatal |
+| `No matching repositories for public-hummingbird*` (repoquery or Containerfile dnf) | dnf5 makes a `--enablerepo/--disablerepo` pattern fatal when it matches no configured repository. The flag is emitted only when a selected repo file defines a `public-hummingbird*` section; if you still see it, the build used a pre-fix generator set — regenerate `.hbgen` with the current scripts |
 | `differs across requested architectures` | Align repository versions or build architectures separately; one manifest tag must not silently describe different versions |
 | Cache not reused despite fresh mtime | Check the request fingerprint: packages, repos, builder reference or architectures changed |
 | `RPM versions cache lacks ... architectures` | Regenerate RPM inputs and run the versions stage for the new selection |
