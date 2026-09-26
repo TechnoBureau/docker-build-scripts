@@ -13,6 +13,7 @@ reviews or task-completion reports.
 | Declarative RPM builder | `build/lib/hummingbird/` | One definition → Hummingbird/UBI distro × variant × platform builds |
 | Image provisioning | `docker/` | Scripts copied into images for installation/hardening |
 | Runtime libraries | `build/lib/hummingbird/prebuildfs/` | Entrypoint, logging and hook libraries inside built images |
+| Image promotion | `build/promotion.sh`, `build/lib/ci-promote.sh` | skopeo-based promotion between registries; runs outside `main_build` |
 
 `universal-ci.sh` is a source-and-call library: `source build/universal-ci.sh`,
 then `main_build ...`. Running the file directly does not invoke a build.
@@ -59,7 +60,15 @@ claiming runtime verification.
 | Registry/config precedence | `ci-config.sh`; FROM credential scopes in `ci-dockerfile.sh` |
 | Build flags/registries | `ci-build.sh` |
 | Shared Docker/Podman platform execution and manifests | `ci-platforms.sh` |
-| Artifacts/signing | `ci-artifacts.sh` |
+| Artifact records, digests and summaries | `ci-artifacts.sh` |
+| Registry logins and credential lookup | `ci-registry.sh` |
+| Build secrets (`--secret` materialisation) | `ci-secrets.sh` |
+| YAML config-file parsing | `ci-yaml.sh` |
+| Repo loading, image removal, cosign signing | `ci-utils.sh` |
+| ECR repository auto-create | `ci-ecr.sh` |
+| Promotion between registries | `ci-promote.sh` (entry point `build/promotion.sh`) |
+| Vendored property aggregation (`.cache/properties.json`) | `aggregate_properties.py` |
+| Vendored RPM input generation (`rpms.in.yaml`) | `generate_rpms_in.py` |
 
 Python filenames above are under `build/lib/hummingbird/`; CI libraries are
 under `build/lib/`.

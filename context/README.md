@@ -31,5 +31,6 @@ main_build() ── Dockerfile flavour ── load_config() ───┐
 ```
 
 `build/lib/hummingbird/*.py` owns structured data and rendering;
-`build/lib/ci-*.sh` owns the engine; `docker/*.sh` and `prebuildfs/` are independent
-image-provisioning/runtime libraries.
+`build/lib/ci-*.sh` owns the engine; `docker/*.sh` and
+`build/lib/hummingbird/prebuildfs/` are independent image-provisioning/runtime
+libraries.

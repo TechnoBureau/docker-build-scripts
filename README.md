@@ -47,19 +47,19 @@ The repository follows a modular design pattern:
 
 ```
 docker-build-scripts/
-├── build/                  # CI/CD and operator management scripts
-│   ├── lib/                # Modular libraries (ci-*.sh, operator-*.sh)
+├── build/                  # CI/CD and image promotion scripts
+│   ├── lib/                # Modular libraries (ci-*.sh; operator-*.sh live in a companion repo)
 │   │   ├── ci-hummingbird.sh   # hummingbird flavour driver
 │   │   └── hummingbird/        # generators, macros, templates, vendored build inputs
+│   │       └── prebuildfs/     # runtime libraries copied into built images
 │   └── *.sh                # Main executables (universal-ci.sh, promotion.sh, ...)
 ├── docker/                 # Container setup and hardening scripts
 │   └── *.sh                # Standalone installation scripts
-├── tests/hummingbird/      # Offline regression suite for the hummingbird pipeline
+├── tests/                  # Offline regression suites (no engine or network needed)
+│   └── hummingbird/        # Shell and Python suites for the hummingbird pipeline
 ├── context/                # Agent & contributor knowledge base
 ├── AGENTS.md               # Entry point for AI agents (hooks, invariants, ownership map)
-└── prebuildfs/             # Container runtime libraries
-    └── opt/scripts/
-        └── lib*.sh         # Reusable shell libraries
+└── CLAUDE.md               # Claude Code entry point; links to AGENTS.md
 ```
 
 **Key Design Principles:**
@@ -369,7 +369,7 @@ This repository is written to be operated by AI agents as well as humans.
 | [`context/extension-guide.md`](context/extension-guide.md) | Step-by-step recipes for the ten most common extensions |
 | [`context/troubleshooting.md`](context/troubleshooting.md) | Real messages, causes and fixes |
 | [`tests/README.md`](tests/README.md) | How the offline suite works and how to extend it |
-| [`CLAUDE.md`](CLAUDE.md) | Repository guide for Claude Code |
+| [`CLAUDE.md`](CLAUDE.md) | Claude Code entry point; links to `AGENTS.md` as the single source of truth |
 
 ---
 
@@ -437,29 +437,29 @@ RUN rm -rf /tmp/*.sh
 
 ## Prebuildfs Libraries
 
-The `prebuildfs/opt/scripts/` directory contains reusable shell libraries for container initialization and runtime:
+The `build/lib/hummingbird/prebuildfs/` tree is copied into images built by the
+hummingbird flavour. It provides reusable shell libraries for container
+initialization and runtime. The libraries are extensionless and are sourced
+from their installed location, e.g. `. /usr/local/bin/liblog`.
 
-- **liblog.sh**: Structured JSON logging (info, warn, error, debug)
-- **libcommon.sh**: Common utilities and welcome messages
-- **libentrypoint.sh**: Container entry point utilities
-- **libenv.sh**: Environment variable management
-- **libfile.sh**: File operations
-- **libfs.sh**: Filesystem utilities
-- **libhook.sh**: Hook script utilities
-- **libnet.sh**: Network utilities
-- **libos.sh**: Operating system utilities
-- **libpersistence.sh**: Data persistence utilities
-- **libservice.sh**: Service management
-- **libvalidations.sh**: Input validation utilities
-- **libversion.sh**: Version management utilities
-- **libwebserver.sh**: Web server utilities
+| Library | Purpose |
+| --- | --- |
+| `usr/local/bin/liblog` | JSON-stream logging (`log`, `info`, `warn`, `error`, `debug`) — one JSON object per line |
+| `usr/local/bin/libjson` | Pure-bash JSON reader (`json_get`, `json_has`) with no jq/grep/sed/awk dependency |
+| `usr/local/bin/libfs` | Filesystem helpers safe for non-root users on read-only filesystems |
+| `usr/local/bin/libenv` | Environment helpers; `env_dump` degrades to a no-op on read-only filesystems |
+| `usr/local/bin/libhook` | Runs lifecycle hooks with output redirected to PID 1 so it lands in the container log stream |
+| `usr/local/bin/libwatch` | File watcher that runs a reload/custom hook when watched config changes |
+| `usr/local/bin/libentrypoint` | Runs user init scripts from `INITSCRIPTS_DIR` with no ownership changes |
+| `usr/sbin/run-script` | POSIX wrapper for running a script with arguments |
+| `usr/sbin/install_packages_chroot` | Installs packages into a chroot (Hummingbird/UBI release argument) |
 
 ### Library Usage Example
 
 ```bash
 # Source required libraries
-. /opt/scripts/liblog.sh
-. /opt/scripts/libcommon.sh
+. /usr/local/bin/liblog
+. /usr/local/bin/libjson
 
 # Use logging functions
 info "Informational message"
@@ -470,7 +470,7 @@ debug "Debug message (only shown when DEBUG=true)"
 
 **JSON Logging**: All log functions output structured JSON:
 ```json
-{"level": "info", "ts": "2026-05-31T09:55:23Z", "msg": "Build completed"}
+{"level":"info","ts":"2026-05-31T09:55:23Z","msg":"Build completed"}
 ```
 
 ---
@@ -660,8 +660,9 @@ SKIP_PUSH=true main_build -d ./Dockerfile -i myapp
 - Ensure `privileged: true` in Tekton/Kubernetes tasks
 
 **Build context too large**
-- Add `.dockerignore` file to exclude unnecessary files
-- Use `--additional-folders` to include only required directories
+- Add a `.dockerignore` file to exclude unnecessary files
+- Use `DOCKER_DIR` / `PREBUILD_DIR` / `ROOTFS_DIR` to merge only the required
+  extra folders (`docker/`, the prebuildfs tree, `rootfs/`) into the build context
 
 **Operator bundle extraction fails**
 - Verify source registry credentials
@@ -713,7 +714,7 @@ Dockerfile Comments > YAML Config > Environment Variables > Defaults
 
 - **Single-arch builds**: One artifact with manifest digest
 - **Multi-arch builds**: Per-architecture artifacts with platform-specific digests
-- Artifacts saved via `ci_save_artifact()` in `ci-build.sh`
+- Artifacts saved via `ci_store_artifact()` in `ci-artifacts.sh`
 - No duplicate saves in `universal-ci.sh` (fixed in latest version)
 
 ### Registry Authentication
