@@ -3,7 +3,7 @@
 # Optional Podman/Buildah assembly. The engine disables layer-cache replay here:
 # an archive written through a bind mount is not a cached layer output.
 RUN --mount=type=bind,target=/run/src,rw \
-    chunkah build --rootfs ${NEWROOT} --max-layers 32 > /run/src/out.ociarchive
+    chunkah build --rootfs ${NEWROOT} --max-layers 32 --output oci:/run/src/out.ociarchive
 
 FROM oci-archive:out.ociarchive
 {%- else %}
