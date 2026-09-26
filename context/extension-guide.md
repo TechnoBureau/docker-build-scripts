@@ -4,7 +4,7 @@ Recipes for the changes that are actually requested, in the order they are usual
 needed. Each recipe lists the files to touch, the invariant it must respect, and
 the test to add.
 
-Start from `AGENTS.md` §2.2 (ownership map) — if a recipe seems to require
+Start from `README.md` §2.2 (ownership map, AI Agent Operating Manual) — if a recipe seems to require
 editing two owners for one behaviour, the design has drifted; fix the owner
 instead.
 
@@ -173,7 +173,7 @@ emitted += [("HBGEN_MY_KNOB", str(my_knob))]
 ```
 
 ```
-# 4. document it: AGENTS.md §4, context/hummingbird-pipeline.md §4.4
+# 4. document it: README.md §4, context/hummingbird-pipeline.md §4.4
 # 5. if the engine must act on it: ci-build.sh reads CONFIG[MY_KNOB]
 ```
 
@@ -250,7 +250,7 @@ build/lib/ci-<flavour>.sh
                                             accumulates <FLAVOUR>_BUILT_IMAGES
 build/universal-ci.sh                     source it, add a branch in main_build
 context/architecture.md                   update the module map
-AGENTS.md §2.2                            add the ownership rows
+README.md §2.2                           add the ownership rows
 tests/<flavour>/                          offline suite (copy the hummingbird shape)
 ```
 
@@ -282,12 +282,12 @@ from the upstream hummingbird containers repository and carry local fixes.
 
 ## 10. Checklist for any extension
 
-- [ ] Behaviour implemented in its single owner (`AGENTS.md` §2.2)
+- [ ] Behaviour implemented in its single owner (`README.md` §2.2)
 - [ ] No YAML/JSON parsing added to bash; no engine calls added to Python
 - [ ] `WHY:` comment wherever the reason is not obvious from the code
 - [ ] Deterministic output (sorted/deduplicated) for anything generated
 - [ ] Offline assertion added to `tests/hummingbird/run-tests.sh`
-- [ ] Docs updated: `context/hummingbird-pipeline.md`, `AGENTS.md` §4 knob table,
+- [ ] Docs updated: `context/hummingbird-pipeline.md`, `README.md` §4 knob table,
       `README.md` if user-visible
 - [ ] Backwards compatible, or the change is called out in the commit message
       and the release notes

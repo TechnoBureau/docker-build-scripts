@@ -53,7 +53,7 @@ HB_TEST_KEEP=1 HB_PYTHON=.venv/bin/python ./tests/hummingbird/run-tests.sh
 
 The shell suite's `-t` filter narrows **reporting**, not execution; a filtered
 summary is not proof that the full suite passed. Stable A–F assertion IDs are
-cross-referenced from `AGENTS.md`. Add new behavioral tests to the suite owning
+cross-referenced from `README.md` §3 (AI Agent Operating Manual). Add new behavioral tests to the suite owning
 the behavior, not to a one-time task report.
 
 ## Boundaries
