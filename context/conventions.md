@@ -135,7 +135,7 @@ Keep useful `WHY:` comments, and update obsolete ones when the contract changes.
   rootfs/platform/version contracts, and the real shared engine with recording
   Docker/Podman executables. See `tests/README.md` for their boundaries.
 - One assertion per behaviour, id-prefixed (`B5`, `D20`, `F9`) and cross-linked
-  from `AGENTS.md` §3.
+  from `README.md` §3 (AI Agent Operating Manual).
 - Every fixed flaw gets an assertion. Every new knob gets one too.
 - Fixtures live in `tests/hummingbird/fixtures/` and are copied to a temp dir
   before use, so the checkout is never written to.
@@ -148,6 +148,6 @@ Keep useful `WHY:` comments, and update obsolete ones when the contract changes.
   `hummingbird: resolve package versions per distro`.
 - One behaviour change per commit where practical; keep refactors separate from
   fixes so a bisect can tell them apart.
-- Run the `before_commit` hook in `AGENTS.md` §2.4.
+- Run the `before_commit` hook in `README.md` §2.4 (AI Agent Operating Manual).
 - Reviewer's first question: *which module owns this behaviour, and did the diff
-  respect that?* (see `AGENTS.md` §2.2).
+  respect that?* (see `README.md` §2.2, AI Agent Operating Manual).

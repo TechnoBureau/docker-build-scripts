@@ -89,6 +89,29 @@ Installs Instana monitoring plugins for container observability.
 ./instana-plugin-install.sh
 ```
 
+### nginx-plugin-instana-install.sh
+
+Installs the Instana NGINX tracing module into an existing NGINX installation,
+auto-detecting the NGINX binary, prefix, modules and configuration directories.
+
+#### Features:
+- Auto-detection of the NGINX binary, prefix, modules directory and config directory
+- Version-matched module download (tracing version and NGINX version)
+- OpenSSL version detection for module compatibility
+
+#### Usage:
+```bash
+./nginx-plugin-instana-install.sh [tracing_version] [nginx_version]
+```
+
+#### Parameters:
+- `tracing_version`: (Optional) Instana NGINX tracing version (default: 1.12.0)
+- `nginx_version`: (Required) NGINX version the module is built for
+
+#### Environment:
+- `INSTANA_DOWNLOAD_KEY`: (Required) Instana artifact repository download key
+- `DOWNLOAD_DIR`: Download location (default: `$HOME/tmp/instana-nginx`)
+
 ### kubectl-install.sh
 
 Installs kubectl with version control.
@@ -254,16 +277,18 @@ USER 1000
 
 ## Integration with CI/CD
 
-These scripts are designed to work seamlessly with the build scripts in the `../build/` directory, particularly with `universal-ci.sh` for automated image building and pushing.
+These scripts are designed to work with the build scripts in the `../build/` directory, particularly with `universal-ci.sh` for automated image building and pushing. The universal engine is a **source-and-call library**: source it and call `main_build`; running the file directly does nothing.
 
 Example integration:
 
 ```bash
-../build/universal-ci.sh my-image \
-  --dockerfile ./Dockerfile \
-  --version 1.0.0 \
-  --push true \
-  --additional-folders ./docker
+source ../build/universal-ci.sh
+
+# Merge this directory into the build context, then build
+DOCKER_DIR=./docker main_build -d ./Dockerfile -i myimage
 ```
 
-This will include the docker scripts in the build context, making them available during the image build process.
+`DOCKER_DIR` (alongside `PREBUILD_DIR` and `ROOTFS_DIR`) merges the named
+folders into the build context, making the scripts available to `COPY` during
+the image build. See [../README.md](../README.md) and
+[../context/architecture.md](../context/architecture.md) for the full contract.

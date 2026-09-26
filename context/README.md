@@ -1,6 +1,7 @@
 # context/ — reusable repository knowledge
 
-[`AGENTS.md`](../AGENTS.md) is the entry point. This folder describes **current
+[`README.md`](../README.md) is the single source of truth — [`AGENTS.md`](../AGENTS.md)
+and [`CLAUDE.md`](../CLAUDE.md) are symlinks to it. This folder describes **current
 code contracts and reusable workflows**, not one-time audits, task histories or
 completion reports. Load only the documents needed for the current task.
 
@@ -18,7 +19,7 @@ completion reports. Load only the documents needed for the current task.
 - One owner per behavior. Keep detailed rationale in its docstring or `WHY:`
   comment; summarize the contract here rather than duplicating implementation.
 - Change current docs and regression tests alongside behavior.
-- Add durable guarantees to `AGENTS.md` §3, with a test reference.
+- Add durable guarantees to `README.md` §3 (AI Agent Operating Manual), with a test reference.
 - Keep one-time review/audit narratives in the change description, not this folder.
 - Execute documented command sequences before publishing changes to them.
 
@@ -31,5 +32,6 @@ main_build() ── Dockerfile flavour ── load_config() ───┐
 ```
 
 `build/lib/hummingbird/*.py` owns structured data and rendering;
-`build/lib/ci-*.sh` owns the engine; `docker/*.sh` and `prebuildfs/` are independent
-image-provisioning/runtime libraries.
+`build/lib/ci-*.sh` owns the engine; `docker/*.sh` and
+`build/lib/hummingbird/prebuildfs/` are independent image-provisioning/runtime
+libraries.

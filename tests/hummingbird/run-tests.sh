@@ -56,7 +56,7 @@ group() {
 }
 
 # Every assertion is prefixed with a stable test id so a failure can be traced
-# back to the behaviour it guards. Ids are cited from AGENTS.md §3 (the
+# back to the behaviour it guards. Ids are cited from README.md §3 (the
 # invariants) and from the WHY: comment at each fix site.
 # WHY -t suppresses counting as well as printing: a filtered run reports only
 # the assertions you asked about, so the summary stays meaningful. The scope is
